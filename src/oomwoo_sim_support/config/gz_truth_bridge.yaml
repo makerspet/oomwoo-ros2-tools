@@ -1,0 +1,8 @@
+# Bridge Gazebo's ground-truth model poses into ROS as a TFMessage so the
+# ground_truth node can read the robot's TRUE pose (independent of AMCL).
+# dynamic_pose/info carries the pose of every non-static model each step.
+- ros_topic_name: "gz_model_tf"
+  gz_topic_name: "/world/default/dynamic_pose/info"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS

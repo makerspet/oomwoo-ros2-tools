@@ -1,0 +1,1 @@
+[coverage_meter-14] [INFO] [1784275103.306896353] [coverage_meter]: COVERAGE_REPORT coverage=0.8553 efficiency=0.5033 revisit_ratio=0.5330 path_m=70.30 ideal_m=35.38 reachable_cells=5661 sim_t=1346.6 target_hit=False t_target=None pose_jumps=0 sim_unstable=False

@@ -1,0 +1,112 @@
+<?xml version="1.0" ?>
+<!-- SPDX-License-Identifier: Apache-2.0
+     Regression world: a 6.5 x 6.5 m living-room-sized space built ONLY from
+     primitive shapes (boxes/cylinders). GPU-LiDAR under headless software
+     rendering (llvmpipe) ray-tests primitives reliably, whereas several of the
+     living_room COLLADA meshes are invisible to it — see README environment
+     notes. Furniture is placed asymmetrically so global localization is
+     well-posed. -->
+<sdf version="1.8">
+  <world name="default">
+    <physics type="ode">
+      <real_time_update_rate>200</real_time_update_rate>
+      <max_step_size>0.005</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- room shell: interior 6.5 x 6.5 m, centered on (1.925, 0.495) to keep
+         the same map origin conventions as the original living_room map -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>1.925 3.845 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static>
+      <pose>1.925 -2.855 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_east">
+      <static>true</static>
+      <pose>5.275 0.495 0.25 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-1.425 0.495 0.25 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>6.9 0.2 0.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- asymmetric furniture (all primitives) -->
+    <model name="sofa">
+      <static>true</static>
+      <pose>4.55 3.0 0.2 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.8 0.8 0.4</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.8 0.8 0.4</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="coffee_table">
+      <static>true</static>
+      <pose>3.4 0.5 0.15 0 0 0.0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.9 0.5 0.3</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.9 0.5 0.3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="bookshelf">
+      <static>true</static>
+      <pose>-1.15 1.4 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.35 1.6 0.7</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.35 1.6 0.7</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="tv_stand">
+      <static>true</static>
+      <pose>0.6 -2.5 0.2 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.4 0.45 0.4</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.4 0.45 0.4</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

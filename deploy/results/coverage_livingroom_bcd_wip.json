@@ -1,0 +1,13 @@
+{
+  "coverage": 0.4937,
+  "coverage_target": 0.9,
+  "target_crossed": false,
+  "efficiency_at_target": null,
+  "efficiency_final": 1.0,
+  "revisit_ratio": 0.4131,
+  "efficiency_target": 0.8,
+  "time_to_target_s": null,
+  "end_reason": "plateau",
+  "sim_unstable": false,
+  "pass": false
+}

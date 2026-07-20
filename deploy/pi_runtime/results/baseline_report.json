@@ -1,0 +1,25 @@
+{
+  "phases": [
+    {
+      "phase": "idle",
+      "n_proc": 4,
+      "rss_mb": 84.7,
+      "pss_mb": 64.4,
+      "mean_cpu_pct": 0.3
+    },
+    {
+      "phase": "slam",
+      "n_proc": 5,
+      "rss_mb": 120.9,
+      "pss_mb": 73.3,
+      "mean_cpu_pct": 6.6
+    },
+    {
+      "phase": "nav",
+      "n_proc": 13,
+      "rss_mb": 614.7,
+      "pss_mb": 337.3,
+      "mean_cpu_pct": 224.2
+    }
+  ]
+}

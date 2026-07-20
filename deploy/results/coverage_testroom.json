@@ -1,0 +1,11 @@
+{
+  "coverage": 0.9449,
+  "coverage_target": 0.9,
+  "efficiency_at_target": 0.8481,
+  "efficiency_final": 0.7133,
+  "efficiency_target": 0.8,
+  "time_to_target_s": 785.0,
+  "end_reason": "sweep_complete",
+  "sim_unstable": false,
+  "pass": true
+}

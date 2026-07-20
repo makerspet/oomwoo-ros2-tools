@@ -1,0 +1,39 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  dependency-lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml
+      # every declared package.xml key must resolve (jazzy pkg or rosdep key),
+      # and every third-party import must be declared — both directions of the
+      # bug class that shipped `<exec_depend>numpy</exec_depend>`.
+      - run: python3 tools/check_rosdeps.py
+
+  colcon-build-test:
+    runs-on: ubuntu-24.04
+    container: ros:jazzy
+    steps:
+      - uses: actions/checkout@v4
+      - name: rosdep install (fatal on unresolvable keys)
+        run: |
+          apt-get update
+          rosdep update --rosdistro jazzy
+          rosdep install --from-paths src --ignore-src -y \
+            --skip-keys "ros_gz_sim ros_gz_bridge"
+          # belt-and-braces: the lint suites must exist even if a rosdep
+          # profile skips test-type dependencies
+          apt-get install -y ros-jazzy-ament-flake8 ros-jazzy-ament-pep257 \
+            ros-jazzy-ament-copyright python3-pytest
+      - name: colcon build
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install
+      - name: colcon test (ament lints + unit tests)
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test
+          colcon test-result --verbose

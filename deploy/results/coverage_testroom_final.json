@@ -1,0 +1,14 @@
+{
+  "coverage": 0.9699,
+  "coverage_target": 0.9,
+  "target_crossed": true,
+  "efficiency_at_target": 0.8777,
+  "efficiency_final": 0.685,
+  "revisit_ratio": 0.276,
+  "efficiency_target": 0.8,
+  "time_to_target_s": 806.0,
+  "end_reason": "sweep_complete",
+  "sim_unstable": false,
+  "measurement_valid": true,
+  "pass": true
+}

@@ -1,0 +1,18 @@
+# captured on the client Pi 4 during the M2 baseline run
+## /proc/device-tree/model
+Raspberry Pi 4 Model B Rev 1.4
+## /proc/cpuinfo (Revision/Model)
+Revision	: b03114
+Model		: Raspberry Pi 4 Model B Rev 1.4
+## revision decode
+mem nibble=3 -> 2G
+## free -m
+               total        used        free      shared  buff/cache   available
+Mem:            1839         411         557           3        1053        1427
+Swap:              0           0           0
+## os
+Ubuntu 24.04.4 LTS
+6.8.0-1047-raspi
+aarch64
+## ros
+jazzy

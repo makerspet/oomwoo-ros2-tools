@@ -1,0 +1,19 @@
+# Coverage-meter denominator audit (meter/planner radius decoupling)
+# Reproduce any line: python3 tools/compute_denominator.py <map.yaml> <spawn_x> <spawn_y> <radius...>
+
+## Measured — meter log lines from the fixed runs (meter pinned to 0.1745)
+test_room   : "serviceable cells from start (60, 31): 13696 (raw reachable 15634, edge_margin 0.15m deferred to floor-care)"
+living_room : "serviceable cells from start (86, 61): 5661 (raw reachable 7795, edge_margin 0.15m deferred to floor-care)"
+
+## Computed — same morphology as the meter, old planner-coupled radii
+test_room   @ robot_radius=0.30   : 13637 cells
+test_room   @ robot_radius=0.1745 : 13696 cells   (+0.43%, matches the live log)
+living_room @ robot_radius=0.24   : 5647 cells
+living_room @ robot_radius=0.1745 : 5661 cells    (+0.25%, matches the live log)
+
+## Reading
+The old coupled meter used a slightly SMALLER denominator in both worlds, so
+earlier scores were inflated by fractions of a percent — the coupling was real
+and directionally as the review predicted, just small in magnitude at these
+radii. The meter is now pinned to the true body radius (0.1745); no planner
+clearance setting can shrink the denominator again.
