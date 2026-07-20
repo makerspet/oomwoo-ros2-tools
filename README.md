@@ -29,8 +29,8 @@ map-and-clean live here so they build, test and version together.
   kidnap injector, and the CLI regression runners.
 
 See **[QUICKSTART.md](QUICKSTART.md)** to build and run the headless regressions on the
-`makerspet/oomwoo:jazzy-dev` image, and **[HANDOVER.md](HANDOVER.md)** for the design
-notes and measured baselines.
+`makerspet/oomwoo:jazzy-dev` image. Milestone design notes and the measured M1/M2
+baselines are archived under **[docs/etc/](docs/etc/)**.
 
 ## Credits
 

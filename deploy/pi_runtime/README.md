@@ -155,9 +155,8 @@ baseline. Two calls it got right and one wrong, stated plainly:
 
 Reproduce on the board: `BAG=$PWD/scan_bag bash measure_pi_baseline.sh` — it
 writes `baseline_report.json` and the per-phase JSONs to `/tmp/pi_baseline`
-(override with `OUT=`); copy those JSONs into `results/` to bank them. The
-committed `results/` files are the banked run these tables come from (see
-`results/PROVENANCE.md`).
+(override with `OUT=`) to bank them. The banked run these tables come from lives
+in [`docs/etc/results/`](../../docs/etc/results/) (see its `PROVENANCE.md`).
 
 ### Pi setup note (reproducing from a fresh Ubuntu Server image)
 
