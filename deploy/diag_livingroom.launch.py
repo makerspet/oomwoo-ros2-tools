@@ -12,7 +12,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    pkg_gz = get_package_share_directory('kaiaai_gazebo')
+    pkg_gz = get_package_share_directory('oomwoo_gazebo')
     pkg_ow = get_package_share_directory('oomwoo_one')
     default_world = os.path.join(pkg_gz, 'worlds', 'living_room.world')
     xacro_file = os.path.join(pkg_ow, 'urdf', 'robot.urdf.xacro')

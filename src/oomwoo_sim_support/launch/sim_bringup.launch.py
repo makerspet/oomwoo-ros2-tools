@@ -54,7 +54,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description() -> LaunchDescription:
     pkg_sim = get_package_share_directory('oomwoo_sim_support')
-    pkg_gazebo = get_package_share_directory('kaiaai_gazebo')
+    pkg_gazebo = get_package_share_directory('oomwoo_gazebo')
 
     # coarser 200 Hz physics step (vs the stock 1 kHz) so the bridged /clock
     # is 5x lighter — critical for a stable sim clock under x86 emulation.

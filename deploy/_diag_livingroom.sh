@@ -13,7 +13,7 @@ source /ros_ws/install/setup.bash
 [ -f "$HOME/oomwoo-dev/install/setup.bash" ] && source "$HOME/oomwoo-dev/install/setup.bash"
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-77} ROS_LOCALHOST_ONLY=1
 
-WORLD=${WORLD:-$(ros2 pkg prefix kaiaai_gazebo)/share/kaiaai_gazebo/worlds/living_room.world}
+WORLD=${WORLD:-$(ros2 pkg prefix oomwoo_gazebo)/share/oomwoo_gazebo/worlds/living_room.world}
 X=${X:-0.394}; Y=${Y:--0.3}; YAW=${YAW:-0.0}
 LAUNCH=$HOME/oomwoo-dev/deploy/diag_livingroom.launch.py
 GZLOG=/tmp/gz_diag.log

@@ -16,7 +16,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description() -> LaunchDescription:
     pkg_sim = get_package_share_directory('oomwoo_sim_support')
-    pkg_gazebo = get_package_share_directory('kaiaai_gazebo')
+    pkg_gazebo = get_package_share_directory('oomwoo_gazebo')
     pkg_oomwoo = get_package_share_directory('oomwoo_one')
 
     world = os.path.join(pkg_sim, 'worlds', 'test_room.world')

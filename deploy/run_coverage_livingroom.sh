@@ -19,7 +19,7 @@ source /ros_ws/install/setup.bash
 [ -f "$HOME/oomwoo-dev/install/setup.bash" ] && source "$HOME/oomwoo-dev/install/setup.bash"
 SHARE=$(ros2 pkg prefix oomwoo_sim_support)/share/oomwoo_sim_support
 
-GZSHARE=$(ros2 pkg prefix kaiaai_gazebo)/share/kaiaai_gazebo
+GZSHARE=$(ros2 pkg prefix oomwoo_gazebo)/share/oomwoo_gazebo
 WORLD=${WORLD:-$GZSHARE/worlds/living_room.world}
 MAP=${MAP:-$SHARE/maps/living_room.yaml}
 X=${X:-0.32}; Y=${Y:-1.59}; YAW=${YAW:-0.0}
