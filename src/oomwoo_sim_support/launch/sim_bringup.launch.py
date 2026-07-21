@@ -84,7 +84,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('gui', default_value='false'),
         # Robot description package, kaiaai-style: 'config' (default) follows
         # `kaia config robot.model <pkg>` (~/.kaiaai.yaml) exactly like the
-        # kaiaai_bringup tutorials; any other value names the package directly.
+        # oomwoo_bringup tutorials; any other value names the package directly.
         # The regression launches pin robot_model:=oomwoo_one so CI gates stay
         # reproducible regardless of the machine's kaia config.
         DeclareLaunchArgument('robot_model', default_value='config'),

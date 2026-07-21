@@ -124,7 +124,7 @@ prepare_workspace() {
 
   clone_or_update jazzy https://github.com/kaiaai/kaiaai_msgs "$WORKSPACE/src/kaiaai_msgs"
   clone_or_update jazzy https://github.com/kaiaai/kaiaai "$WORKSPACE/src/kaiaai"
-  clone_or_update jazzy https://github.com/kaiaai/kaiaai_bringup "$WORKSPACE/src/kaiaai_bringup"
+  clone_or_update jazzy https://github.com/makerspet/oomwoo_bringup "$WORKSPACE/src/oomwoo_bringup"
   clone_or_update jazzy https://github.com/makerspet/makerspet_vac "$WORKSPACE/src/makerspet_vac"
   clone_or_update jazzy https://github.com/makerspet/makerspet "$WORKSPACE/src/makerspet"
   clone_or_update main https://github.com/makerspet/oomwoo-one "$WORKSPACE/src/oomwoo_one"
