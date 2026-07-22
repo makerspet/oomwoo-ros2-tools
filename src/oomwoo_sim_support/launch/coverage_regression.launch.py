@@ -61,6 +61,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('robot_model', default_value='oomwoo_one'),
         # gui:=true watches this exact regression in the Gazebo GUI
         DeclareLaunchArgument('gui', default_value='false'),
+        # contact_aware:=false restores the legacy blind straight reverse escape
+        # (for A/B against the bumper-directed peel-off escape)
+        DeclareLaunchArgument('contact_aware', default_value='true'),
     ]
     robot_radius = ParameterValue(
         LaunchConfiguration('robot_radius'), value_type=float)
@@ -97,6 +100,8 @@ def generate_launch_description() -> LaunchDescription:
         package='oomwoo_coverage', executable='coverage_planner', output='screen',
         parameters=[{'cleaning_radius': cleaning_radius, 'robot_radius': robot_radius,
                      'coverage_target': coverage_target, 'row_overlap': 0.05, 'max_retries': 1,
+                     'contact_aware_escape': ParameterValue(
+                         LaunchConfiguration('contact_aware'), value_type=bool),
                      'use_sim_time': True}],
         remappings=[('map', '/map'),
                     ('coverage_ratio', '/coverage_meter/ratio'),

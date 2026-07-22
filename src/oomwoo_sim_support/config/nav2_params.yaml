@@ -131,8 +131,17 @@ controller_server:
       max_lookahead_dist: 0.6
       use_velocity_scaled_lookahead_dist: false
       transform_tolerance: 5.0
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
+      # A vacuum is contact-TOLERANT: it is meant to drive up to walls and
+      # furniture (that's the bumper's job). RPP's forward collision check is
+      # collision-AVERSE — on our sub-inscribed inflated costmap it fired a
+      # "phantom" abort ~0.06 m short of every obstacle, so the robot ground to
+      # a halt near furniture without ever touching (0 bumper contacts, ~90
+      # aborts/run, coverage capped ~20%). Disabling it lets the robot reach
+      # contact; safety near obstacles is then carried by the coverage planner's
+      # held-bumper peel-off escape (bumper held -> turn away from pressed side).
+      # A/B (living_room, 135 s window): ~20% -> ~36% coverage, aborts 90 -> 0.
+      use_collision_detection: false
+      max_allowed_time_to_collision_up_to_carrot: 0.3  # unused while detection off; kept as a conservative fallback
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.5

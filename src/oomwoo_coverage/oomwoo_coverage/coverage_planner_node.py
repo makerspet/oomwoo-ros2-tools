@@ -48,6 +48,8 @@ from nav2_msgs.action import NavigateToPose
 
 from nav_msgs.msg import OccupancyGrid
 
+from ros_gz_interfaces.msg import Contacts
+
 import numpy as np
 
 import rclpy
@@ -144,11 +146,30 @@ class CoveragePlanner(Node):
         self.declare_parameter('escape_after_skips', 2)
         self.declare_parameter('escape_sec', 2.5)
         self.declare_parameter('escape_speed', -0.12)
+        # Contact-aware escape: rotate AWAY from the pressed bumper instead of a
+        # blind straight reverse (real vacuums peel off the contact, they don't
+        # just back up). contact_aware_escape:=False restores the legacy blind
+        # reverse — used for A/B comparison.
+        self.declare_parameter('escape_turn', 0.6)        # rad/s peel-off turn
+        self.declare_parameter('bumper_fresh_sec', 0.5)   # contact freshness window
+        self.declare_parameter('contact_aware_escape', True)
+        # a bumper pressed continuously this long -> peel off immediately, without
+        # waiting for Nav2 to give up (the iRobot "bumper held -> panic turn" rule)
+        self.declare_parameter('bumper_hold_escape_sec', 1.5)
         self.escape_after = self.get_parameter('escape_after_skips').value
         self.escape_sec = self.get_parameter('escape_sec').value
         self.escape_speed = self.get_parameter('escape_speed').value
+        self.escape_turn = self.get_parameter('escape_turn').value
+        self.bumper_fresh_sec = self.get_parameter('bumper_fresh_sec').value
+        self.contact_aware_escape = self.get_parameter('contact_aware_escape').value
+        self.bumper_hold_escape_sec = self.get_parameter('bumper_hold_escape_sec').value
         self.consecutive_skips = 0
         self.escape_until = None
+        self._bump_left_t = None       # last /bumper_left/contact time
+        self._bump_right_t = None      # last /bumper_right/contact time
+        self._bump_left_held_since = None   # start of the current L contact episode
+        self._bump_right_held_since = None  # start of the current R contact episode
+        self._escape_az = 0.0          # angular.z applied during the active escape
         # Wedge RECOVERY (not just escape): a blind reverse with no memory
         # re-enters the same pocket, which is how the living_room run burned
         # ~15 min looping. On a wedge we now (a) record a no-go pocket at the
@@ -187,6 +208,9 @@ class CoveragePlanner(Node):
             Bool, '~/cleaning_active', latched_qos())
         # only used by the wedge escape, while no Nav2 goal is active
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        # which bumper is pressed decides which way to peel off (_escape_angular)
+        self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
+        self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
@@ -568,6 +592,51 @@ class CoveragePlanner(Node):
         self.next_send = self.get_clock().now() + rclpy.duration.Duration(
             seconds=0.25)
 
+    def _bump_left_cb(self, msg: Contacts) -> None:
+        if msg.contacts:
+            now = self.get_clock().now()
+            if self._bump_left_t is None \
+                    or self._elapsed(self._bump_left_t) >= self.bumper_fresh_sec:
+                self._bump_left_held_since = now   # start of a new contact episode
+            self._bump_left_t = now
+
+    def _bump_right_cb(self, msg: Contacts) -> None:
+        if msg.contacts:
+            now = self.get_clock().now()
+            if self._bump_right_t is None \
+                    or self._elapsed(self._bump_right_t) >= self.bumper_fresh_sec:
+                self._bump_right_held_since = now
+            self._bump_right_t = now
+
+    def _bumper_fresh(self, t) -> bool:
+        return t is not None and self._elapsed(t) < self.bumper_fresh_sec
+
+    def _bumper_held_long(self) -> bool:
+        """True if a bumper has been pressed *continuously* for the escape threshold."""
+        if not self.contact_aware_escape:
+            return False
+        for last, since in ((self._bump_left_t, self._bump_left_held_since),
+                            (self._bump_right_t, self._bump_right_held_since)):
+            if last is not None and since is not None \
+                    and self._elapsed(last) < self.bumper_fresh_sec \
+                    and self._elapsed(since) >= self.bumper_hold_escape_sec:
+                return True
+        return False
+
+    def _escape_angular(self) -> float:
+        """rad/s to rotate AWAY from the pressed bumper (0 = none/blind reverse)."""
+        if not self.contact_aware_escape:
+            return 0.0
+        left = self._bumper_fresh(self._bump_left_t)
+        right = self._bumper_fresh(self._bump_right_t)
+        if left and not right:
+            return -self.escape_turn    # left contact -> front swings right, away
+        if right and not left:
+            return +self.escape_turn    # right contact -> front swings left, away
+        if left and right:
+            return -self.escape_turn    # head-on -> back + turn to change heading
+        return 0.0                      # no contact sensed -> legacy blind reverse
+
     def _elapsed(self, t) -> float:
         return (self.get_clock().now() - t).nanoseconds * 1e-9
 
@@ -612,12 +681,42 @@ class CoveragePlanner(Node):
             tw = Twist()
             if self.get_clock().now() < self.escape_until:
                 tw.linear.x = self.escape_speed
+                tw.angular.z = self._escape_az
                 self.cmd_pub.publish(tw)
                 return
             self.cmd_pub.publish(tw)    # zero twist: stop cleanly
             self.escape_until = None
             self.next_send = self.get_clock().now() + rclpy.duration.Duration(
                 seconds=1.0)
+            return
+
+        # HELD-BUMPER reactive escape: a bumper pressed continuously means we
+        # drove into something and are grinding (with or without an active Nav2
+        # goal) — peel off NOW, don't wait for the skip counter (which needs Nav2
+        # to give up first, wasting time pressed against the obstacle).
+        if self.escape_until is None and self.escapes_done < self.max_escapes \
+                and self._bumper_held_long():
+            if self.awaiting and self.goal_handle is not None:
+                self.goal_handle.cancel_goal_async()
+            self.awaiting = False
+            self.consecutive_skips = 0
+            target = self.cached_poses[self.wp_index] \
+                if self.wp_index < len(self.cached_poses) else None
+            if target is not None:
+                tx = target.pose.position.x
+                ty = target.pose.position.y
+                if not _pt_in_zones(tx, ty, self.wedge_zones):
+                    self.wedge_zones.append((tx, ty, self.wedge_avoid_radius))
+            self.escapes_done += 1
+            self._escape_az = self._escape_angular()
+            self._bump_left_held_since = None
+            self._bump_right_held_since = None
+            self.get_logger().warn(
+                f'bumper held near waypoint {self.wp_index}: peel off '
+                f'(turn {self._escape_az:+.1f}) {self.escape_sec}s '
+                f'(escape {self.escapes_done}/{self.max_escapes})')
+            self.escape_until = self.get_clock().now() \
+                + rclpy.duration.Duration(seconds=self.escape_sec)
             return
 
         # per-goal watchdog: cancel a waypoint Nav2 is grinding on
@@ -652,9 +751,12 @@ class CoveragePlanner(Node):
             # Reverse out — only within the escape budget, so a pathological
             # world can't loop forever (pruning still carries the sweep past it)
             if self.escapes_done <= self.max_escapes:
+                self._escape_az = self._escape_angular()
+                how = 'reverse' if self._escape_az == 0.0 else \
+                    f'reverse+turn {self._escape_az:+.1f} away from bumper'
                 self.get_logger().warn(
                     f'wedged near waypoint {self.wp_index}: no-go pocket '
-                    f'recorded, reversing {self.escape_sec}s '
+                    f'recorded, {how} {self.escape_sec}s '
                     f'(escape {self.escapes_done}/{self.max_escapes})')
                 self.escape_until = self.get_clock().now() \
                     + rclpy.duration.Duration(seconds=self.escape_sec)
