@@ -48,8 +48,6 @@ from nav2_msgs.action import NavigateToPose
 
 from nav_msgs.msg import OccupancyGrid
 
-from ros_gz_interfaces.msg import Contacts
-
 import numpy as np
 
 import rclpy
@@ -62,6 +60,8 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
+
+from ros_gz_interfaces.msg import Contacts
 
 from std_msgs.msg import Bool, Float32
 
@@ -612,7 +612,7 @@ class CoveragePlanner(Node):
         return t is not None and self._elapsed(t) < self.bumper_fresh_sec
 
     def _bumper_held_long(self) -> bool:
-        """True if a bumper has been pressed *continuously* for the escape threshold."""
+        """Return True if a bumper has been held *continuously* past the threshold."""
         if not self.contact_aware_escape:
             return False
         for last, since in ((self._bump_left_t, self._bump_left_held_since),
