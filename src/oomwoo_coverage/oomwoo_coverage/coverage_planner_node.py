@@ -46,7 +46,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 
 from nav2_msgs.action import NavigateToPose
 
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 
 import numpy as np
 
@@ -210,6 +210,10 @@ class CoveragePlanner(Node):
 
         self.active_pub = self.create_publisher(
             Bool, '~/cleaning_active', latched_qos())
+        # the full boustrophedon plan, latched, for RViz — add a Path display on
+        # /coverage_planner/plan (fixed frame = map). Republished whenever the
+        # plan changes (gap-fill), so the display always shows the current plan.
+        self.plan_pub = self.create_publisher(Path, '~/plan', latched_qos())
         # only used by the wedge escape, while no Nav2 goal is active
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         # which bumper is pressed decides which way to peel off (_escape_angular)
@@ -421,6 +425,16 @@ class CoveragePlanner(Node):
             poses.append(p)
         return poses
 
+    def _publish_plan(self) -> None:
+        """Publish the current waypoint plan as a latched Path for RViz."""
+        if self.cached_poses is None:
+            return
+        path = Path()
+        path.header.frame_id = self.global_frame
+        path.header.stamp = self.get_clock().now().to_msg()
+        path.poses = list(self.cached_poses)
+        self.plan_pub.publish(path)
+
     # ----------------------------------------------------------- execution
     # Waypoints are executed ONE AT A TIME via NavigateToPose, not as a single
     # NavigateThroughPoses goal. A NavigateThroughPoses goal aborts the *whole*
@@ -440,6 +454,7 @@ class CoveragePlanner(Node):
                 return
             self.cached_poses = poses
             self.wp_index = 0
+            self._publish_plan()
             self.get_logger().info(
                 f'coverage plan: {len(poses)} waypoints, executing sequentially')
         if not self.nav_client.server_is_ready():
@@ -476,6 +491,7 @@ class CoveragePlanner(Node):
                     self.gapfill_passes += 1
                     self.cached_poses = gaps
                     self.wp_index = 0
+                    self._publish_plan()
                     self.get_logger().info(
                         f'gap-fill pass {self.gapfill_passes}: '
                         f'{len(gaps)} uncovered spots, coverage '
