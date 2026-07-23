@@ -102,10 +102,14 @@ class CoveragePlanner(Node):
         self.declare_parameter('robot_base_frame', 'base_footprint')
         self.declare_parameter('min_segment_len', 0.20)   # m, drop slivers
         self.declare_parameter('goal_settle_sec', 0.0)    # optional dwell per goal
+        # spacing of intra-row waypoints; smaller = tighter tracking, less
+        # corner-cutting by the pure-pursuit controller (was hard-coded 1.0 m)
+        self.declare_parameter('row_substep_m', 0.4)
 
         self.cleaning_radius = self.get_parameter('cleaning_radius').value
         self.row_overlap = self.get_parameter('row_overlap').value
         self.robot_radius = self.get_parameter('robot_radius').value
+        self.row_substep_m = self.get_parameter('row_substep_m').value
         self.coverage_target = self.get_parameter('coverage_target').value
         self.stop_at_target = self.get_parameter('stop_at_target').value
         self.sweep_axis = self.get_parameter('sweep_axis').value
@@ -361,7 +365,7 @@ class CoveragePlanner(Node):
         # row line: with only two endpoints, the controller cuts the corner
         # toward the far next-row goal and curves, adding path and leaving band
         # slivers. One waypoint per `substep` metres tightens tracking.
-        substep = max(1, int(round(1.0 / res)))
+        substep = max(1, int(round(self.row_substep_m / res)))
 
         def cell_rows(cell):
             """Sample the cell's rows every `step`, always keeping the last."""

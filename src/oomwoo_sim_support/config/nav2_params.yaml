@@ -126,7 +126,15 @@ controller_server:
       # oscillation on long straight segments).
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.2
-      lookahead_dist: 0.35
+      # Coverage flows through a chain of closely-spaced per-waypoint goals. RPP
+      # decelerates approaching EACH goal (within approach_velocity_scaling_dist,
+      # default 0.6 m, down to min_approach_linear_velocity, default 0.05) — with
+      # a waypoint every ~0.4 m the robot was almost always inside that window,
+      # so it stuttered/slowed on straight rows. Floor the approach speed at
+      # cruise and shrink the slow-down window so intermediate goals don't brake.
+      min_approach_linear_velocity: 0.2
+      approach_velocity_scaling_dist: 0.15
+      lookahead_dist: 0.25   # was 0.35: shorter lookahead hugs the row/corner tighter (less corner-cut)
       min_lookahead_dist: 0.25
       max_lookahead_dist: 0.6
       use_velocity_scaled_lookahead_dist: false

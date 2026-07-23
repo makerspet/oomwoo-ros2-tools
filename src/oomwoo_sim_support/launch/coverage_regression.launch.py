@@ -64,6 +64,9 @@ def generate_launch_description() -> LaunchDescription:
         # contact_aware:=false restores the legacy blind straight reverse escape
         # (for A/B against the bumper-directed peel-off escape)
         DeclareLaunchArgument('contact_aware', default_value='true'),
+        # metres between intra-row waypoints; smaller = tighter tracking, fewer
+        # cut corners (row_substep:=1.0 restores the old coarse spacing for A/B)
+        DeclareLaunchArgument('row_substep', default_value='0.4'),
     ]
     robot_radius = ParameterValue(
         LaunchConfiguration('robot_radius'), value_type=float)
@@ -102,6 +105,8 @@ def generate_launch_description() -> LaunchDescription:
                      'coverage_target': coverage_target, 'row_overlap': 0.05, 'max_retries': 1,
                      'contact_aware_escape': ParameterValue(
                          LaunchConfiguration('contact_aware'), value_type=bool),
+                     'row_substep_m': ParameterValue(
+                         LaunchConfiguration('row_substep'), value_type=float),
                      'use_sim_time': True}],
         remappings=[('map', '/map'),
                     ('coverage_ratio', '/coverage_meter/ratio'),
