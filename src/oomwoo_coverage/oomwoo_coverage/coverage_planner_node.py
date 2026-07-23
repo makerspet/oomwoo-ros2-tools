@@ -139,6 +139,15 @@ class CoveragePlanner(Node):
         self.goal_deadline = None      # per-waypoint watchdog start
         self.declare_parameter('goal_timeout_sec', 30.0)
         self.goal_timeout = self.get_parameter('goal_timeout_sec').value
+        # No-progress skip: if the robot doesn't get meaningfully closer to the
+        # current waypoint for this long it's stuck/blocked — give up FAST rather
+        # than waiting out Nav2's collision-averse recovery ladder (backup/spin/
+        # wait can't move in a costmap-lethal wedge) and the full goal timeout.
+        # Legitimate long transits keep making progress, so they're untouched.
+        self.declare_parameter('no_progress_sec', 6.0)
+        self.no_progress_sec = self.get_parameter('no_progress_sec').value
+        self._goal_best_dist = None     # closest we've gotten to the current goal
+        self._goal_progress_t = None    # last time that distance improved
         self.declare_parameter('max_retries', 3)
         self.max_retries = self.get_parameter('max_retries').value
         self.awaiting = False
@@ -586,6 +595,8 @@ class CoveragePlanner(Node):
         goal.pose = p
         self.awaiting = True
         self.goal_deadline = self.get_clock().now()
+        self._goal_best_dist = None     # reset no-progress tracking for this goal
+        self._goal_progress_t = self.get_clock().now()
         self.nav_client.send_goal_async(goal).add_done_callback(
             self._on_goal_response)
 
@@ -815,15 +826,39 @@ class CoveragePlanner(Node):
                 + rclpy.duration.Duration(seconds=self.escape_sec)
             return
 
-        # per-goal watchdog: cancel a waypoint Nav2 is grinding on
-        if self.awaiting and self.goal_deadline is not None \
-                and self._elapsed(self.goal_deadline) >= self.goal_timeout:
-            self.get_logger().warn(f'waypoint {self.wp_index} timed out')
-            if self.goal_handle is not None:
-                self.goal_handle.cancel_goal_async()  # -> _on_result(CANCELED)
-            else:
-                self.awaiting = False
-                self.wp_retries = self.max_retries    # force skip next result
+        # per-goal watchdog: give up on a waypoint FAST. Primary trigger is
+        # NO-PROGRESS — if the robot isn't getting closer, it's stuck/blocked and
+        # Nav2's recovery ladder can't help, so don't wait it out; goal_timeout is
+        # only a slow backstop for a robot that creeps but never arrives. Either
+        # way it's a one-strike skip (not a retry): a genuinely stuck waypoint
+        # won't become reachable by trying again, and gap-fill revisits later.
+        if self.awaiting and self.goal_deadline is not None:
+            stuck = False
+            if self.robot_xy is not None \
+                    and self.wp_index < len(self.cached_poses):
+                g = self.cached_poses[self.wp_index].pose.position
+                dist = ((g.x - self.robot_xy[0]) ** 2
+                        + (g.y - self.robot_xy[1]) ** 2) ** 0.5
+                if dist <= 0.3:                 # basically arrived; let Nav2 finish
+                    self._goal_progress_t = self.get_clock().now()
+                elif self._goal_best_dist is None \
+                        or dist < self._goal_best_dist - 0.05:
+                    self._goal_best_dist = dist  # got closer: progress
+                    self._goal_progress_t = self.get_clock().now()
+                elif self._goal_progress_t is not None \
+                        and self._elapsed(self._goal_progress_t) \
+                        >= self.no_progress_sec:
+                    stuck = True
+            if stuck or self._elapsed(self.goal_deadline) >= self.goal_timeout:
+                self.get_logger().warn(
+                    f'waypoint {self.wp_index} '
+                    + ('stuck (no progress)' if stuck else 'timed out')
+                    + '; skipping')
+                self.wp_retries = self.max_retries    # one-strike: skip, not retry
+                if self.goal_handle is not None:
+                    self.goal_handle.cancel_goal_async()  # -> _on_result -> skip
+                else:
+                    self.awaiting = False
         # several skips in a row = wedged in a costmap-lethal pocket; Nav2's
         # own recoveries refuse to move there, so recover ourselves
         elif not self.awaiting and self.consecutive_skips >= self.escape_after:
