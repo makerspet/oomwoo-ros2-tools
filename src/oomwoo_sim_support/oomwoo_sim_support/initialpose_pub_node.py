@@ -13,12 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Seed AMCL with a known initial pose, robustly, without a launch timing race.
+Localization gate: hold navigation until AMCL has actually localized.
 
-AMCL in the oomwoo navigation config has ``set_initial_pose: false``, so on a
-fresh bringup it holds no pose and Nav2 cannot plan. This node republishes a
-known ``/initialpose`` a few times (until AMCL is active and has latched it),
-then exits. Used by the coverage bringup where the robot's start pose is known.
+AMCL self-seeds (``set_initial_pose: True``), but the Nav2 navigation stack must
+not activate until AMCL has published its pose / the ``map->odom`` transform.
+Activate the global costmap first and it comes up with no ``map->odom``,
+``bt_navigator`` never reaches ACTIVE, and every goal is rejected with
+``Action server is inactive. Rejecting the goal`` — the robot never moves. The
+old launch bridged that gap with a fixed 8 s wall-clock stagger, which a slow
+(GUI / software-rendered) startup could overrun, leaving the stack wedged.
+
+This node gates on the *real* signal instead of a timer: it watches
+``/amcl_pose`` (AMCL publishes it on the same update that broadcasts
+``map->odom``) and exits(0) the instant it appears — the launch starts
+navigation on this node's exit, so nav comes up exactly when localization is
+ready, at any startup speed. As a backstop, if AMCL has not localized after a
+short grace period it (re)publishes ``/initialpose`` in case the self-seed was
+lost. It fails OPEN: after a generous timeout it exits anyway, so a genuinely
+stuck AMCL degrades to the old start-nav-anyway behaviour rather than hanging the
+launch forever.
 """
 
 import math
@@ -30,24 +43,42 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 
-class InitialPosePub(Node):
+class InitialPoseGate(Node):
     def __init__(self) -> None:
         super().__init__('initialpose_pub')
         self.declare_parameter('x', 0.0)
         self.declare_parameter('y', 0.0)
         self.declare_parameter('yaw', 0.0)
-        self.declare_parameter('count', 6)
-        self.declare_parameter('period', 1.0)
+        self.declare_parameter('period', 0.5)            # s between checks
+        self.declare_parameter('reseed_after_sec', 4.0)  # backstop-seed if not localized by now
+        self.declare_parameter('timeout_sec', 60.0)      # fail-open: release nav anyway after this
         self.x = self.get_parameter('x').value
         self.y = self.get_parameter('y').value
         self.yaw = self.get_parameter('yaw').value
-        self.remaining = int(self.get_parameter('count').value)
+        self.reseed_after = float(self.get_parameter('reseed_after_sec').value)
+        self.timeout = float(self.get_parameter('timeout_sec').value)
 
-        self.pub = self.create_publisher(PoseWithCovarianceStamped, 'initialpose', 10)
+        self.localized = False
+        self.reseeds = 0
+        self.start = self.get_clock().now()
+
+        self.pub = self.create_publisher(
+            PoseWithCovarianceStamped, 'initialpose', 10)
+        # AMCL publishes /amcl_pose on the update that also broadcasts map->odom,
+        # so its arrival is our proof localization is ready for the costmap.
+        self.create_subscription(
+            PoseWithCovarianceStamped, 'amcl_pose', self._amcl_cb, 10)
         self.timer = self.create_timer(
             float(self.get_parameter('period').value), self._tick)
 
-    def _tick(self) -> None:
+    def _amcl_cb(self, _msg: PoseWithCovarianceStamped) -> None:
+        self.localized = True
+
+    def _elapsed(self) -> float:
+        return (self.get_clock().now() - self.start).nanoseconds * 1e-9
+
+    def _seed(self) -> None:
+        """Republish the known start pose to /initialpose (self-seed backstop)."""
         msg = PoseWithCovarianceStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'map'
@@ -60,18 +91,34 @@ class InitialPosePub(Node):
         msg.pose.covariance[7] = 0.25
         msg.pose.covariance[35] = 0.068
         self.pub.publish(msg)
-        self.remaining -= 1
-        self.get_logger().info(
-            f'published /initialpose ({self.x:.2f},{self.y:.2f},{self.yaw:.2f}) '
-            f'[{self.remaining} left]')
-        if self.remaining <= 0:
+
+    def _tick(self) -> None:
+        el = self._elapsed()
+        if self.localized:
+            self.get_logger().info(
+                f'AMCL localized after {el:.1f}s '
+                f'({self.reseeds} backstop seed(s)) — releasing navigation')
             self.timer.cancel()
             raise SystemExit
+        if el >= self.timeout:
+            self.get_logger().error(
+                f'AMCL not localized after {el:.1f}s (no /amcl_pose) — releasing '
+                'navigation anyway; check that amcl is up and receiving /scan')
+            self.timer.cancel()
+            raise SystemExit
+        if el >= self.reseed_after:
+            # the self-seed apparently didn't take — republish /initialpose
+            self._seed()
+            self.reseeds += 1
+            if self.reseeds == 1 or self.reseeds % 10 == 0:
+                self.get_logger().warn(
+                    f'AMCL not localized after {el:.1f}s; re-seeding '
+                    f'/initialpose ({self.reseeds})')
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = InitialPosePub()
+    node = InitialPoseGate()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException, SystemExit):

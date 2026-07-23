@@ -41,7 +41,6 @@ from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
-    TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
@@ -138,17 +137,32 @@ def generate_launch_description() -> LaunchDescription:
                        '-allow_renaming', 'false'])
         # Nav2 comes up only AFTER the robot is actually in the world — gated
         # on the spawn process exiting, not a fixed timer racing gz's cold
-        # start. Localization (map_server + AMCL) starts on that event;
-        # navigation follows a short, DETERMINISTIC 8 s later so AMCL has
-        # published the map->odom transform before the Nav2 global costmap
-        # activates (activating it first fails). This stagger is safe — it's
-        # measured from the already-spawned robot, not the unpredictable
-        # Gazebo startup — so it is not the fragile fixed-timer pattern.
+        # start. Localization (map_server + AMCL) starts on that event.
+        #
+        # Navigation must not start until AMCL has published map->odom: activate
+        # the Nav2 global costmap first and it comes up with no transform,
+        # bt_navigator never reaches ACTIVE, and every goal is rejected
+        # ("Action server is inactive") — the robot never moves. The old launch
+        # bridged this with a fixed 8 s wall-clock stagger, which a slow (GUI /
+        # software-rendered) startup could overrun, wedging the whole stack.
+        # Instead, gate on the REAL signal: initialpose_pub now waits for AMCL to
+        # localize (publish /amcl_pose <-> map->odom) and exits; navigation
+        # starts on that exit, so it comes up exactly when localization is ready,
+        # at any startup speed. The gate fails open (releases nav after a
+        # generous timeout) so a stuck AMCL can't hang the launch.
+        loc_gate = Node(
+            package='oomwoo_sim_support', executable='initialpose_pub',
+            name='initialpose_pub', output='screen',
+            parameters=[{'use_sim_time': True,
+                         'x': ParameterValue(x0, value_type=float),
+                         'y': ParameterValue(y0, value_type=float),
+                         'yaw': ParameterValue(yaw0, value_type=float)}])
+        nav_on_localized = RegisterEventHandler(
+            OnProcessExit(target_action=loc_gate, on_exit=navigation))
         nav_on_spawn = RegisterEventHandler(
             OnProcessExit(
                 target_action=spawn,
-                on_exit=localization
-                + [TimerAction(period=8.0, actions=navigation)]))
+                on_exit=localization + [loc_gate]))
         return [
             # models + meshes resolvable by gz (stock kaiaai models + the robot
             # description). The stock living_room furniture — including the
@@ -158,7 +172,7 @@ def generate_launch_description() -> LaunchDescription:
                 'GZ_SIM_RESOURCE_PATH',
                 os.pathsep.join([os.path.join(pkg_gazebo, 'models'),
                                  pkg_robot])),
-            rsp, bridge, spawn, nav_on_spawn,
+            rsp, bridge, spawn, nav_on_spawn, nav_on_localized,
         ]
 
     # Gazebo via the official ros_gz_sim wrapper (mirrors kaiaai): it
@@ -280,16 +294,15 @@ def generate_launch_description() -> LaunchDescription:
                      'use_sim_time': True}],
         remappings=[('odom', '/odom'), ('~/pose', '/ground_truth/pose')])
 
-    # AMCL self-initializes at spawn (set_initial_pose); the standalone
-    # initialpose_pub node remains available for bringups that need to seed a
-    # pose over /initialpose instead.
+    # AMCL self-initializes at spawn (set_initial_pose); the initialpose_pub node
+    # (see robot_setup) also gates navigation on AMCL actually localizing, and
+    # re-seeds /initialpose as a backstop if the self-seed is lost.
 
     # Event-ordered, not clock-ordered: gz starts immediately, robot_setup
-    # spawns the robot the moment Gazebo is ready (create -timeout), and
-    # localization is gated on that spawn completing. The one remaining timer
-    # is the deliberate 8 s localization->nav stagger inside robot_setup (so
-    # AMCL publishes map->odom before the Nav2 costmap activates) — measured
-    # from the already-spawned robot, not from the unpredictable gz start.
+    # spawns the robot the moment Gazebo is ready (create -timeout), localization
+    # is gated on that spawn completing, and navigation is gated on AMCL actually
+    # localizing (the initialpose_pub gate) — no fixed timers anywhere in the
+    # chain, so it is robust to slow (GUI / software-rendered) startups.
     # ground_truth and the application nodes self-gate on their own inputs.
     return LaunchDescription(args + set_env + [
         gz_server, gz_gui, ground_truth,
