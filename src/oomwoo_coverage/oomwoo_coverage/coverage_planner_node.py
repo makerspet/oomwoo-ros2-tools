@@ -40,7 +40,7 @@ planner under test consumes the same grid the grader scores with, so the
 sim pass certifies the sweep + the harness loop, not a standalone estimator.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 
@@ -105,11 +105,16 @@ class CoveragePlanner(Node):
         # spacing of intra-row waypoints; smaller = tighter tracking, less
         # corner-cutting by the pure-pursuit controller (was hard-coded 1.0 m)
         self.declare_parameter('row_substep_m', 0.4)
+        # sweep each cell along its LONGER axis so the robot makes the fewest,
+        # longest passes (fewer turns = more time cleaning). False = always
+        # horizontal rows (the old behaviour), kept for A/B.
+        self.declare_parameter('long_axis_sweep', True)
 
         self.cleaning_radius = self.get_parameter('cleaning_radius').value
         self.row_overlap = self.get_parameter('row_overlap').value
         self.robot_radius = self.get_parameter('robot_radius').value
         self.row_substep_m = self.get_parameter('row_substep_m').value
+        self.long_axis_sweep = self.get_parameter('long_axis_sweep').value
         self.coverage_target = self.get_parameter('coverage_target').value
         self.stop_at_target = self.get_parameter('stop_at_target').value
         self.sweep_axis = self.get_parameter('sweep_axis').value
@@ -357,63 +362,134 @@ class CoveragePlanner(Node):
         # first, entering each at whichever corner is closest — one transit
         # per cell instead of one round-trip around the furniture per row.
         cells = _decompose_cells(reachable)
-        # drop slivers a swath already catches from the neighbouring cell
+        # Absorb sliver cells: a cell smaller than one swath (`step`) in BOTH
+        # dimensions is a fragment — a neighbour's swath overlap plus the gap-
+        # fill pass already cover its area, so sweeping it as its own cell only
+        # buys an extra transit + turns. Dropping these de-fragments the plan
+        # (the cluttered living_room sheds its ring of furniture-corner slivers).
         cells = [c for c in cells
-                 if len(c) >= step or
-                 max(b - a + 1 for _, a, b in c) >= min_seg_cells]
-        self.get_logger().info(
-            f'cell decomposition: {len(cells)} sweepable cells '
-            f'({len(cells) - 1 if cells else 0} inter-cell transits)')
+                 if max(len(c), max(b - a + 1 for _, a, b in c)) > step]
 
-        # intermediate waypoints along each row keep the robot ON the straight
-        # row line: with only two endpoints, the controller cuts the corner
-        # toward the far next-row goal and curves, adding path and leaving band
-        # slivers. One waypoint per `substep` metres tightens tracking.
+        # intermediate waypoints along each pass keep the robot ON the straight
+        # line: with only two endpoints the controller cuts the corner toward the
+        # far next-pass goal and curves. One waypoint per `substep` m tightens it.
         substep = max(1, int(round(self.row_substep_m / res)))
 
-        def cell_rows(cell):
-            """Sample the cell's rows every `step`, always keeping the last."""
-            rows = cell[::step]
-            if rows[-1] != cell[-1]:
-                rows = list(rows) + [cell[-1]]
-            return list(rows)
+        # Per-cell orientation: sweep ALONG each cell's long axis so the robot
+        # makes the fewest, longest passes (a turn costs time; a tall-thin cell
+        # swept in horizontal rows is all turns). Build a small bool mask per
+        # cell; step across its short axis, laying passes down the long one.
+        def cell_mask(cell):
+            r0 = cell[0][0]
+            c_lo = min(a for _, a, _ in cell)
+            c_hi = max(b for _, _, b in cell)
+            m = np.zeros((cell[-1][0] - r0 + 1, c_hi - c_lo + 1), dtype=bool)
+            for (r, a, b) in cell:
+                m[r - r0, a - c_lo:b - c_lo + 1] = True
+            return r0, c_lo, m
 
-        def corners(cell):
-            """(row, col, enter_at_last_row, enter_at_b) for 4 entry corners."""
-            (r0, a0, b0), (r1, a1, b1) = cell[0], cell[-1]
-            return [(r0, a0, False, False), (r0, b0, False, True),
-                    (r1, a1, True, False), (r1, b1, True, True)]
+        masks = [cell_mask(c) for c in cells]
 
-        waypoints: List[Tuple[float, float]] = []
-        cur = (seed[0], seed[1])                        # (row, col)
-        remaining = list(cells)
-        while remaining:
-            # nearest cell by best entry corner from where the sweep now is
-            best = None
-            for ci, cell in enumerate(remaining):
-                for (r, c, from_last, at_b) in corners(cell):
-                    d = (r - cur[0]) ** 2 + (c - cur[1]) ** 2
-                    if best is None or d < best[0]:
-                        best = (d, ci, from_last, at_b)
-            _, ci, from_last, at_b = best
-            cell = remaining.pop(ci)
-            rows = cell_rows(cell)
-            if from_last:
-                rows.reverse()
-            flip = at_b                                 # start at the b end
-            for (row, a, b) in rows:
-                if b - a + 1 < min_seg_cells:
-                    continue
-                y = oy + (row + 0.5) * res
-                pts = list(range(a, b + 1, substep))
-                if pts[-1] != b:
-                    pts.append(b)
-                if flip:
-                    pts.reverse()
-                for c in pts:
-                    waypoints.append((ox + (c + 0.5) * res, y))
+        def build_cell_data(vertical_ok):
+            """Build per-cell sweep data; vertical_ok flips tall cells vertical."""
+            data = []
+            for (r0, c_lo, m) in masks:
+                h, w = m.shape
+                vertical = vertical_ok and h > w        # taller than wide
+                r1, c_hi = r0 + h - 1, c_lo + w - 1
+                # 4 bbox corners (row, col, major_last, minor_last): major is the
+                # step-across axis, minor is along each pass; the flags say which
+                # end of each we enter from, so we start at the nearest corner.
+                corners = []
+                for (rr, cc) in ((r0, c_lo), (r0, c_hi), (r1, c_lo), (r1, c_hi)):
+                    if vertical:                 # major = columns, minor = rows
+                        corners.append((rr, cc, cc == c_hi, rr == r1))
+                    else:                        # major = rows, minor = columns
+                        corners.append((rr, cc, rr == r1, cc == c_hi))
+                data.append({'r0': r0, 'c_lo': c_lo, 'm': m,
+                             'vertical': vertical, 'corners': corners})
+            return data
+
+        def cell_waypoints(cd, major_last, minor_last):
+            """Serpentine (x, y) waypoints for a cell entered at a given corner."""
+            m, r0, c_lo, vertical = cd['m'], cd['r0'], cd['c_lo'], cd['vertical']
+            h, w = m.shape
+            n_major = w if vertical else h
+            major = list(range(0, n_major, step))
+            if major[-1] != n_major - 1:
+                major.append(n_major - 1)
+            if major_last:
+                major.reverse()
+            pts = []
+            flip = minor_last
+            for i in major:
+                minor = np.where(m[:, i] if vertical else m[i, :])[0]
+                for run in _contiguous_runs(minor):
+                    a, b = int(run[0]), int(run[-1])
+                    if b - a + 1 < min_seg_cells:
+                        continue
+                    ks = list(range(a, b + 1, substep))
+                    if ks[-1] != b:
+                        ks.append(b)
+                    if flip:
+                        ks.reverse()
+                    for k in ks:
+                        if vertical:
+                            pts.append((ox + (c_lo + i + 0.5) * res,
+                                        oy + (r0 + k + 0.5) * res))
+                        else:
+                            pts.append((ox + (c_lo + k + 0.5) * res,
+                                        oy + (r0 + i + 0.5) * res))
                 flip = not flip
-                cur = (row, pts[-1])
+            return pts
+
+        def build_sweep(cell_data):
+            """Chain cells nearest-corner-first into one serpentine list."""
+            wps = []
+            cur = (ox + (seed[1] + 0.5) * res, oy + (seed[0] + 0.5) * res)
+            remaining = list(cell_data)
+            while remaining:
+                # nearest cell by best entry corner from where the sweep now is
+                best = None
+                for ci, cd in enumerate(remaining):
+                    for (r, c, maj_last, min_last) in cd['corners']:
+                        dx = ox + (c + 0.5) * res - cur[0]
+                        dy = oy + (r + 0.5) * res - cur[1]
+                        d = dx * dx + dy * dy
+                        if best is None or d < best[0]:
+                            best = (d, ci, maj_last, min_last)
+                _, ci, maj_last, min_last = best
+                cd = remaining.pop(ci)
+                pts = cell_waypoints(cd, maj_last, min_last)
+                if pts:
+                    wps.extend(pts)
+                    cur = pts[-1]
+            return wps
+
+        def sweep_cost(wps):
+            """Return a time-proxy cost: travel metres plus a per-turn penalty."""
+            if len(wps) < 3:
+                return float(len(wps))
+            p = np.asarray(wps)
+            seg = np.diff(p, axis=0)
+            length = float(np.hypot(seg[:, 0], seg[:, 1]).sum())
+            head = np.arctan2(seg[:, 1], seg[:, 0])
+            dh = np.abs((np.diff(head) + np.pi) % (2 * np.pi) - np.pi)
+            turns = int((dh > 0.52).sum())
+            return length + 0.3 * turns          # ~0.3 m of driving per turn
+
+        # Cost-based orientation: build the sweep all-horizontal and (if enabled)
+        # per-cell long-axis; keep whichever is cheaper. Never worse than the old
+        # horizontal plan, and picks vertical where a tall room saves turns.
+        waypoints = build_sweep(build_cell_data(False))
+        mode = 'horizontal'
+        if self.long_axis_sweep:
+            cand = build_sweep(build_cell_data(True))
+            if sweep_cost(cand) < sweep_cost(waypoints):
+                waypoints, mode = cand, 'long-axis'
+        self.get_logger().info(
+            f'cell decomposition: {len(cells)} cells; {mode} sweep, '
+            f'{len(waypoints)} waypoints')
 
         poses: List[PoseStamped] = []
         for (x, y) in waypoints:

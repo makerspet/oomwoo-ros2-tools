@@ -67,6 +67,9 @@ def generate_launch_description() -> LaunchDescription:
         # metres between intra-row waypoints; smaller = tighter tracking, fewer
         # cut corners (row_substep:=1.0 restores the old coarse spacing for A/B)
         DeclareLaunchArgument('row_substep', default_value='0.4'),
+        # sweep each cell along its long axis to minimise turns; long_axis:=false
+        # restores always-horizontal rows for A/B
+        DeclareLaunchArgument('long_axis', default_value='true'),
     ]
     robot_radius = ParameterValue(
         LaunchConfiguration('robot_radius'), value_type=float)
@@ -107,6 +110,8 @@ def generate_launch_description() -> LaunchDescription:
                          LaunchConfiguration('contact_aware'), value_type=bool),
                      'row_substep_m': ParameterValue(
                          LaunchConfiguration('row_substep'), value_type=float),
+                     'long_axis_sweep': ParameterValue(
+                         LaunchConfiguration('long_axis'), value_type=bool),
                      'use_sim_time': True}],
         remappings=[('map', '/map'),
                     ('coverage_ratio', '/coverage_meter/ratio'),
