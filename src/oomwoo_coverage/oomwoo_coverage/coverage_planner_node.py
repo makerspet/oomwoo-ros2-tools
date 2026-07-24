@@ -157,7 +157,7 @@ class CoveragePlanner(Node):
         # overhead. See docs/reactive-row-executor.md. 'nav2' stays the baseline.
         self.declare_parameter('executor', 'nav2')
         self.exec_mode = self.get_parameter('executor').value
-        self.declare_parameter('v_cruise', 0.2)          # m/s along a pass
+        self.declare_parameter('v_cruise', 0.35)         # m/s along a pass
         self.declare_parameter('k_heading', 1.6)         # steer/rotate gain
         self.declare_parameter('rotate_speed', 1.0)      # max rad/s (in-place turn)
         self.declare_parameter('align_tol', 0.35)        # rad: rotate in place above this
@@ -1014,12 +1014,23 @@ class CoveragePlanner(Node):
             self._drive_best_dist = None
             return
         # steer toward the point: rotate in place if badly misaligned, else cruise
-        herr = _wrap(float(np.arctan2(dy, dx)) - ryaw)
+        heading = float(np.arctan2(dy, dx))
+        herr = _wrap(heading - ryaw)
         az = max(-self.rotate_speed, min(self.rotate_speed, self.k_heading * herr))
         tw = Twist()
         tw.angular.z = az
         if abs(herr) < self.align_tol:
-            tw.linear.x = self.v_cruise
+            v = self.v_cruise
+            # ease down into a coming in-place turn so a high cruise speed can't
+            # overshoot the corner: taper over the last 0.4 m before the target
+            # when the next segment turns away by more than align_tol.
+            nxt = self.wp_index + 1
+            if nxt < len(self.cached_poses):
+                n = self.cached_poses[nxt].pose.position
+                turn = abs(_wrap(float(np.arctan2(n.y - ty, n.x - tx)) - heading))
+                if turn > self.align_tol:
+                    v = max(0.08, min(v, self.v_cruise * dist / 0.4))
+            tw.linear.x = v
         self.cmd_pub.publish(tw)
 
 

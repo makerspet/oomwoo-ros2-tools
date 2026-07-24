@@ -73,6 +73,9 @@ def generate_launch_description() -> LaunchDescription:
         # execution: 'nav2' (a NavigateToPose goal per waypoint) or 'reactive'
         # (drive passes directly on /cmd_vel, transits via Nav2)
         DeclareLaunchArgument('executor', default_value='nav2'),
+        # reactive-executor tuning (only used when executor:=reactive)
+        DeclareLaunchArgument('v_cruise', default_value='0.35'),
+        DeclareLaunchArgument('min_transit_len', default_value='0.7'),
     ]
     robot_radius = ParameterValue(
         LaunchConfiguration('robot_radius'), value_type=float)
@@ -116,6 +119,10 @@ def generate_launch_description() -> LaunchDescription:
                      'long_axis_sweep': ParameterValue(
                          LaunchConfiguration('long_axis'), value_type=bool),
                      'executor': LaunchConfiguration('executor'),
+                     'v_cruise': ParameterValue(
+                         LaunchConfiguration('v_cruise'), value_type=float),
+                     'min_transit_len': ParameterValue(
+                         LaunchConfiguration('min_transit_len'), value_type=float),
                      'use_sim_time': True}],
         remappings=[('map', '/map'),
                     ('coverage_ratio', '/coverage_meter/ratio'),
