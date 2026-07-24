@@ -70,6 +70,9 @@ def generate_launch_description() -> LaunchDescription:
         # sweep each cell along its long axis to minimise turns; long_axis:=false
         # restores always-horizontal rows for A/B
         DeclareLaunchArgument('long_axis', default_value='true'),
+        # execution: 'nav2' (a NavigateToPose goal per waypoint) or 'reactive'
+        # (drive passes directly on /cmd_vel, transits via Nav2)
+        DeclareLaunchArgument('executor', default_value='nav2'),
     ]
     robot_radius = ParameterValue(
         LaunchConfiguration('robot_radius'), value_type=float)
@@ -112,6 +115,7 @@ def generate_launch_description() -> LaunchDescription:
                          LaunchConfiguration('row_substep'), value_type=float),
                      'long_axis_sweep': ParameterValue(
                          LaunchConfiguration('long_axis'), value_type=bool),
+                     'executor': LaunchConfiguration('executor'),
                      'use_sim_time': True}],
         remappings=[('map', '/map'),
                     ('coverage_ratio', '/coverage_meter/ratio'),

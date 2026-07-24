@@ -65,6 +65,8 @@ from ros_gz_interfaces.msg import Contacts
 
 from std_msgs.msg import Bool, Float32
 
+from tf2_ros import Buffer, TransformException, TransformListener
+
 # OccupancyGrid cell conventions
 FREE = 0
 UNKNOWN = -1
@@ -148,6 +150,30 @@ class CoveragePlanner(Node):
         self.no_progress_sec = self.get_parameter('no_progress_sec').value
         self._goal_best_dist = None     # closest we've gotten to the current goal
         self._goal_progress_t = None    # last time that distance improved
+        # Executor: 'nav2' fires a NavigateToPose goal per waypoint (heavy: ~3 s
+        # of goal-handshake each). 'reactive' drives sweep passes directly on
+        # /cmd_vel using localization (crisp in-place turns at pass ends), and
+        # only routes the longer inter-cell transits through Nav2 — far less
+        # overhead. See docs/reactive-row-executor.md. 'nav2' stays the baseline.
+        self.declare_parameter('executor', 'nav2')
+        self.exec_mode = self.get_parameter('executor').value
+        self.declare_parameter('v_cruise', 0.2)          # m/s along a pass
+        self.declare_parameter('k_heading', 1.6)         # steer/rotate gain
+        self.declare_parameter('rotate_speed', 1.0)      # max rad/s (in-place turn)
+        self.declare_parameter('align_tol', 0.35)        # rad: rotate in place above this
+        self.declare_parameter('reach_tol', 0.12)        # m: waypoint reached
+        self.declare_parameter('min_transit_len', 0.7)   # m: route via Nav2 above this
+        self.v_cruise = self.get_parameter('v_cruise').value
+        self.k_heading = self.get_parameter('k_heading').value
+        self.rotate_speed = self.get_parameter('rotate_speed').value
+        self.align_tol = self.get_parameter('align_tol').value
+        self.reach_tol = self.get_parameter('reach_tol').value
+        self.min_transit_len = self.get_parameter('min_transit_len').value
+        self.robot_yaw = 0.0            # latest heading (map frame)
+        self._drive_best_dist = None   # reactive-drive no-progress tracking
+        self._drive_progress_t = None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('max_retries', 3)
         self.max_retries = self.get_parameter('max_retries').value
         self.awaiting = False
@@ -328,6 +354,19 @@ class CoveragePlanner(Node):
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         self.robot_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        self.robot_yaw = _yaw_from_quat(msg.pose.pose.orientation)
+
+    def _robot_pose(self):
+        """Return (x, y, yaw) in the map frame, TF-first (high rate) then AMCL."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.global_frame, self.base_frame, rclpy.time.Time())
+            tr = t.transform.translation
+            return (tr.x, tr.y, _yaw_from_quat(t.transform.rotation))
+        except TransformException:               # TF not ready yet -> fall back
+            if self.robot_xy is None:
+                return None
+            return (self.robot_xy[0], self.robot_xy[1], self.robot_yaw)
 
     # ------------------------------------------------------------- planning
     def _plan_waypoints(self) -> List[PoseStamped]:
@@ -554,42 +593,47 @@ class CoveragePlanner(Node):
         # sends are paced by _tick so instant-aborts (Nav2 not ready) retry the
         # SAME waypoint instead of burning through the whole list
 
-    def _send_next(self) -> None:
+    def _advance_to_target(self) -> bool:
+        """
+        Skip clean / no-go waypoints; gap-fill or finish at the plan's end.
+
+        Return True if a live target remains at self.wp_index, else False
+        (gap-fill just started, the run finished, or nothing to do this tick).
+        """
         # skip waypoints already cleaned or inside a recorded no-go pocket —
         # the pocket pruning is what stops the sweep re-entering a wedge
         while (self.wp_index < len(self.cached_poses)
                and self._skip_waypoint(self.wp_index)):
             self.wp_index += 1
             self.wp_retries = 0
-        if self.wp_index >= len(self.cached_poses):
-            # the boustrophedon leaves furniture-shadow / pocket gaps a single
-            # sweep direction can't reach; a targeted gap-fill pass visits the
-            # remaining uncovered clusters directly (real vacuums do the same
-            # spot-recleaning). Cheap in path since it only touches what's left.
-            # run-to-completion mode gap-fills until the passes are spent or
-            # nothing uncovered remains — not merely until the gate is met
-            if self.gapfill_passes < self.max_gapfill and \
-                    (not self.stop_at_target
-                     or self.ext_ratio < self.coverage_target):
-                gaps = self._gapfill_waypoints()
-                if gaps:
-                    self.gapfill_passes += 1
-                    self.cached_poses = gaps
-                    self.wp_index = 0
-                    self._publish_plan()
-                    self.get_logger().info(
-                        f'gap-fill pass {self.gapfill_passes}: '
-                        f'{len(gaps)} uncovered spots, coverage '
-                        f'{self.ext_ratio:.1%}')
-                    return
-            self.get_logger().info(
-                f'coverage complete: {self.ext_ratio:.1%} covered')
-            self.finished = True
-            self.active_pub.publish(Bool(data=False))
-            return
-        if not self.nav_client.server_is_ready():
-            return                      # try again next tick
-        p = self.cached_poses[self.wp_index]
+        if self.wp_index < len(self.cached_poses):
+            return True
+        # the boustrophedon leaves furniture-shadow / pocket gaps a single sweep
+        # direction can't reach; a targeted gap-fill pass visits the remaining
+        # uncovered clusters directly. Run-to-completion gap-fills until the
+        # passes are spent or nothing uncovered remains.
+        if self.gapfill_passes < self.max_gapfill and \
+                (not self.stop_at_target
+                 or self.ext_ratio < self.coverage_target):
+            gaps = self._gapfill_waypoints()
+            if gaps:
+                self.gapfill_passes += 1
+                self.cached_poses = gaps
+                self.wp_index = 0
+                self._publish_plan()
+                self.get_logger().info(
+                    f'gap-fill pass {self.gapfill_passes}: '
+                    f'{len(gaps)} uncovered spots, coverage '
+                    f'{self.ext_ratio:.1%}')
+                return False
+        self.get_logger().info(
+            f'coverage complete: {self.ext_ratio:.1%} covered')
+        self.finished = True
+        self.active_pub.publish(Bool(data=False))
+        return False
+
+    def _send_goal_to(self, p) -> None:
+        """Dispatch a NavigateToPose goal (Nav2) for pose p."""
         p.header.stamp = self.get_clock().now().to_msg()
         goal = NavigateToPose.Goal()
         goal.pose = p
@@ -599,6 +643,13 @@ class CoveragePlanner(Node):
         self._goal_progress_t = self.get_clock().now()
         self.nav_client.send_goal_async(goal).add_done_callback(
             self._on_goal_response)
+
+    def _send_next(self) -> None:
+        if not self._advance_to_target():
+            return
+        if not self.nav_client.server_is_ready():
+            return                      # try again next tick
+        self._send_goal_to(self.cached_poses[self.wp_index])
 
     def _gapfill_waypoints(self):
         """
@@ -826,83 +877,164 @@ class CoveragePlanner(Node):
                 + rclpy.duration.Duration(seconds=self.escape_sec)
             return
 
-        # per-goal watchdog: give up on a waypoint FAST. Primary trigger is
-        # NO-PROGRESS — if the robot isn't getting closer, it's stuck/blocked and
-        # Nav2's recovery ladder can't help, so don't wait it out; goal_timeout is
-        # only a slow backstop for a robot that creeps but never arrives. Either
-        # way it's a one-strike skip (not a retry): a genuinely stuck waypoint
-        # won't become reachable by trying again, and gap-fill revisits later.
+        # Reactive executor drives sweep passes on /cmd_vel and routes only long
+        # transits through Nav2 — a separate path from the per-waypoint dispatch.
+        if self.exec_mode == 'reactive':
+            self._tick_reactive()
+            return
+
+        # nav2 executor: per-goal watchdog, then wedge escape, then dispatch
         if self.awaiting and self.goal_deadline is not None:
-            stuck = False
-            if self.robot_xy is not None \
-                    and self.wp_index < len(self.cached_poses):
-                g = self.cached_poses[self.wp_index].pose.position
-                dist = ((g.x - self.robot_xy[0]) ** 2
-                        + (g.y - self.robot_xy[1]) ** 2) ** 0.5
-                if dist <= 0.3:                 # basically arrived; let Nav2 finish
-                    self._goal_progress_t = self.get_clock().now()
-                elif self._goal_best_dist is None \
-                        or dist < self._goal_best_dist - 0.05:
-                    self._goal_best_dist = dist  # got closer: progress
-                    self._goal_progress_t = self.get_clock().now()
-                elif self._goal_progress_t is not None \
-                        and self._elapsed(self._goal_progress_t) \
-                        >= self.no_progress_sec:
-                    stuck = True
-            if stuck or self._elapsed(self.goal_deadline) >= self.goal_timeout:
-                self.get_logger().warn(
-                    f'waypoint {self.wp_index} '
-                    + ('stuck (no progress)' if stuck else 'timed out')
-                    + '; skipping')
-                self.wp_retries = self.max_retries    # one-strike: skip, not retry
-                if self.goal_handle is not None:
-                    self.goal_handle.cancel_goal_async()  # -> _on_result -> skip
-                else:
-                    self.awaiting = False
-        # several skips in a row = wedged in a costmap-lethal pocket; Nav2's
-        # own recoveries refuse to move there, so recover ourselves
-        elif not self.awaiting and self.consecutive_skips >= self.escape_after:
-            self.consecutive_skips = 0
-            # Record a no-go POCKET so upcoming and gap-fill waypoints inside
-            # it are pruned — this stops the re-entry loop that used to freeze
-            # the run. The rest of the sweep continues (no whole-cell abandon).
-            # Center it on the waypoint that failed, not the robot's current
-            # pose (post-reverse the robot has moved), and skip the append if
-            # that spot is already inside a recorded pocket, so the zone list
-            # is naturally deduplicated and bounded by the number of distinct
-            # pockets rather than growing on every tick.
-            target = self.cached_poses[self.wp_index] \
-                if self.wp_index < len(self.cached_poses) else None
-            if target is not None:
-                tx = target.pose.position.x
-                ty = target.pose.position.y
-                if not _pt_in_zones(tx, ty, self.wedge_zones):
-                    self.wedge_zones.append((tx, ty, self.wedge_avoid_radius))
-            self.escapes_done += 1
-            # Reverse out — only within the escape budget, so a pathological
-            # world can't loop forever (pruning still carries the sweep past it)
-            if self.escapes_done <= self.max_escapes:
-                self._escape_az = self._escape_angular()
-                how = 'reverse' if self._escape_az == 0.0 else \
-                    f'reverse+turn {self._escape_az:+.1f} away from bumper'
-                self.get_logger().warn(
-                    f'wedged near waypoint {self.wp_index}: no-go pocket '
-                    f'recorded, {how} {self.escape_sec}s '
-                    f'(escape {self.escapes_done}/{self.max_escapes})')
-                self.escape_until = self.get_clock().now() \
-                    + rclpy.duration.Duration(seconds=self.escape_sec)
-            else:
-                self.get_logger().warn(
-                    'escape budget spent; pruning pockets and continuing '
-                    '(no more reverses this run)')
-                self.next_send = self.get_clock().now()
-        # dispatch the next waypoint once idle and past the cooldown
+            self._goal_watchdog()
+        elif self._maybe_wedge_escape():
+            pass
         elif not self.awaiting \
                 and self.get_clock().now() >= self.next_send:
             self._send_next()
 
+    def _goal_watchdog(self) -> None:
+        """
+        Give up on the in-flight goal FAST on no-progress (timeout backstop).
+
+        No-progress means the robot isn't getting closer to the target — it's
+        stuck/blocked and Nav2's recovery ladder can't help, so skip on one
+        strike (not a retry); gap-fill revisits later. goal_timeout is only a
+        slow absolute backstop for a robot that creeps but never arrives.
+        """
+        stuck = False
+        if self.robot_xy is not None \
+                and self.wp_index < len(self.cached_poses):
+            g = self.cached_poses[self.wp_index].pose.position
+            dist = ((g.x - self.robot_xy[0]) ** 2
+                    + (g.y - self.robot_xy[1]) ** 2) ** 0.5
+            if dist <= 0.3:                     # basically arrived; let Nav2 finish
+                self._goal_progress_t = self.get_clock().now()
+            elif self._goal_best_dist is None \
+                    or dist < self._goal_best_dist - 0.05:
+                self._goal_best_dist = dist     # got closer: progress
+                self._goal_progress_t = self.get_clock().now()
+            elif self._goal_progress_t is not None \
+                    and self._elapsed(self._goal_progress_t) \
+                    >= self.no_progress_sec:
+                stuck = True
+        if stuck or self._elapsed(self.goal_deadline) >= self.goal_timeout:
+            self.get_logger().warn(
+                f'waypoint {self.wp_index} '
+                + ('stuck (no progress)' if stuck else 'timed out')
+                + '; skipping')
+            self.wp_retries = self.max_retries  # one-strike: skip, not retry
+            if self.goal_handle is not None:
+                self.goal_handle.cancel_goal_async()  # -> _on_result -> skip
+            else:
+                self.awaiting = False
+
+    def _maybe_wedge_escape(self) -> bool:
+        """
+        Reverse out of a costmap-lethal pocket after several skips in a row.
+
+        Nav2's own spin/backup refuse to move there, so recover ourselves.
+        Return True when this tick was handled (fired an escape or spent the
+        budget), so the caller skips dispatch.
+        """
+        if self.awaiting or self.consecutive_skips < self.escape_after:
+            return False
+        self.consecutive_skips = 0
+        # Record a no-go POCKET so upcoming and gap-fill waypoints inside it are
+        # pruned — stops the re-entry loop that used to freeze the run. Centre it
+        # on the failed waypoint (post-reverse the robot has moved), and dedupe
+        # against recorded pockets so the zone list stays bounded.
+        target = self.cached_poses[self.wp_index] \
+            if self.wp_index < len(self.cached_poses) else None
+        if target is not None:
+            tx = target.pose.position.x
+            ty = target.pose.position.y
+            if not _pt_in_zones(tx, ty, self.wedge_zones):
+                self.wedge_zones.append((tx, ty, self.wedge_avoid_radius))
+        self.escapes_done += 1
+        # Reverse out — only within the escape budget, so a pathological world
+        # can't loop forever (pruning still carries the sweep past it).
+        if self.escapes_done <= self.max_escapes:
+            self._escape_az = self._escape_angular()
+            how = 'reverse' if self._escape_az == 0.0 else \
+                f'reverse+turn {self._escape_az:+.1f} away from bumper'
+            self.get_logger().warn(
+                f'wedged near waypoint {self.wp_index}: no-go pocket '
+                f'recorded, {how} {self.escape_sec}s '
+                f'(escape {self.escapes_done}/{self.max_escapes})')
+            self.escape_until = self.get_clock().now() \
+                + rclpy.duration.Duration(seconds=self.escape_sec)
+        else:
+            self.get_logger().warn(
+                'escape budget spent; pruning pockets and continuing '
+                '(no more reverses this run)')
+            self.next_send = self.get_clock().now()
+        return True
+
+    def _tick_reactive(self) -> None:
+        """Reactive executor: drive passes on /cmd_vel, transits via Nav2."""
+        # a transit (Nav2) goal may be in flight — let Nav2 finish or skip it
+        if self.awaiting:
+            if self.goal_deadline is not None:
+                self._goal_watchdog()
+            return
+        if self._maybe_wedge_escape():
+            return
+        pose = self._robot_pose()
+        if pose is None:
+            return
+        if not self._advance_to_target():
+            return
+        target = self.cached_poses[self.wp_index]
+        tx, ty = target.pose.position.x, target.pose.position.y
+        rx, ry, ryaw = pose
+        dx, dy = tx - rx, ty - ry
+        dist = (dx * dx + dy * dy) ** 0.5
+        # long inter-cell hop: route via Nav2 (avoid plowing through furniture)
+        if dist > self.min_transit_len:
+            if self.nav_client.server_is_ready():
+                self._send_goal_to(target)
+            return
+        if dist <= self.reach_tol:              # reached this pass waypoint
+            self.wp_index += 1
+            self.wp_retries = 0
+            self.consecutive_skips = 0
+            self._drive_best_dist = None
+            return
+        # no-progress skip for the reactive drive (same idea as the goal watchdog)
+        now = self.get_clock().now()
+        if self._drive_best_dist is None or dist < self._drive_best_dist - 0.05:
+            self._drive_best_dist = dist
+            self._drive_progress_t = now
+        elif self._drive_progress_t is not None \
+                and self._elapsed(self._drive_progress_t) >= self.no_progress_sec:
+            self.get_logger().warn(
+                f'waypoint {self.wp_index} stuck (reactive); skipping')
+            self.wp_index += 1
+            self.consecutive_skips += 1
+            self._drive_best_dist = None
+            return
+        # steer toward the point: rotate in place if badly misaligned, else cruise
+        herr = _wrap(float(np.arctan2(dy, dx)) - ryaw)
+        az = max(-self.rotate_speed, min(self.rotate_speed, self.k_heading * herr))
+        tw = Twist()
+        tw.angular.z = az
+        if abs(herr) < self.align_tol:
+            tw.linear.x = self.v_cruise
+        self.cmd_pub.publish(tw)
+
 
 # ------------------------------------------------------------- numpy helpers
+def _wrap(a: float) -> float:
+    """Wrap an angle to [-pi, pi]."""
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def _yaw_from_quat(q) -> float:
+    """Yaw (rad) from a geometry_msgs quaternion."""
+    return float(np.arctan2(2.0 * (q.w * q.z + q.x * q.y),
+                            1.0 - 2.0 * (q.y * q.y + q.z * q.z)))
+
+
 def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
     """Binary dilation by a square structuring element of given radius."""
     if radius <= 0:
