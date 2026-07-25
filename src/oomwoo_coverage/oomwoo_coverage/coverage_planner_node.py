@@ -250,10 +250,15 @@ class CoveragePlanner(Node):
 
         self.active_pub = self.create_publisher(
             Bool, '~/cleaning_active', latched_qos())
-        # the full boustrophedon plan, latched, for RViz — add a Path display on
-        # /coverage_planner/plan (fixed frame = map). Republished whenever the
-        # plan changes (gap-fill), so the display always shows the current plan.
+        # the full boustrophedon plan, for RViz — add a Path display on
+        # /coverage_planner/plan (fixed frame = map). Latched for early joiners,
+        # AND republished on a slow timer: a single transient-local sample often
+        # fails to reach a late-joining subscriber (RViz Path displays default to
+        # Volatile QoS, and some DDS setups don't deliver the retained sample), so
+        # the periodic refresh makes the path show up regardless of QoS or when
+        # RViz connects. Cheap (a few hundred poses every 2 s).
         self.plan_pub = self.create_publisher(Path, '~/plan', latched_qos())
+        self.create_timer(2.0, self._publish_plan)
         # only used by the wedge escape, while no Nav2 goal is active
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         # which bumper is pressed decides which way to peel off (_escape_angular)
