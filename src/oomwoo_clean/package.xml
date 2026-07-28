@@ -9,6 +9,7 @@
   <maintainer email="makers-pet@users.noreply.github.com">Ilia O.</maintainer>
   <license>Apache-2.0</license>
 
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>launch</exec_depend>
