@@ -28,8 +28,12 @@ map-and-clean live here so they build, test and version together.
 - **`oomwoo_sim_support`** — everything needed to run *and measure* the above headless
   in Gazebo: sim bring-up, a ground-truth pose publisher, the coverage meter, the
   kidnap injector, and the CLI regression runners.
-- **`oomwoo_clean`** — cleaning-specific navigation and RViz debug tooling
-  (`cleaning_debug.launch.py`), the home for the from-scratch cleaning rebuild.
+- **`oomwoo_clean`** — cleaning-specific navigation, the home for the
+  from-scratch cleaning-with-map rebuild.
+- **`oomwoo_clean_ui`** — RViz debug tooling for cleaning
+  (`cleaning_debug.launch.py`): a ready-made layout with the coverage plan,
+  robot, LiDAR, map and covered grid pre-added. Split out so its `rviz2`
+  dependency stays off the robot runtime.
 
 ## Tutorials
 
@@ -88,7 +92,8 @@ docker run -it --name oom makerspet/oomwoo:jazzy-dev
 Everything below runs at the **container's bash prompt**. The packages are
 already built and sourced — nothing to clone. (Editing them? Rebuild with
 `colcon build --symlink-install --packages-select oomwoo_coverage
-oomwoo_nav_localize oomwoo_sim_support oomwoo_clean` in `/ros_ws`.)
+oomwoo_nav_localize oomwoo_sim_support oomwoo_clean oomwoo_clean_ui` in
+`/ros_ws`.)
 
 ### 2. Kidnapped-robot test (~4 min)
 

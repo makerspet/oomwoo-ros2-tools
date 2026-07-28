@@ -1,16 +1,19 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>oomwoo_clean</name>
+  <name>oomwoo_clean_ui</name>
   <version>0.1.0</version>
-  <description>Cleaning-specific navigation for the OOMWOO robot vacuum:
-    the home for cleaning-with-map and the cleaning logic. Kept separate from
-    generic point-to-point navigation; RViz debug tooling lives in
-    oomwoo_clean_ui so it stays off the robot runtime.</description>
+  <description>RViz debug tooling for OOMWOO cleaning: a ready-made RViz layout
+    (cleaning_debug.launch.py) with the coverage plan, robot model, LiDAR, map,
+    and covered grid pre-added. Split out from oomwoo_clean so the UI (and its
+    rviz2 dependency) stays off the robot runtime.</description>
   <maintainer email="makers-pet@users.noreply.github.com">Ilia O.</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>rclpy</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

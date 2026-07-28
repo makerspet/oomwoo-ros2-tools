@@ -35,7 +35,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description() -> LaunchDescription:
     rviz_config = os.path.join(
-        get_package_share_directory('oomwoo_clean'),
+        get_package_share_directory('oomwoo_clean_ui'),
         'config', 'cleaning_debug.rviz')
     use_sim_time = ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool)

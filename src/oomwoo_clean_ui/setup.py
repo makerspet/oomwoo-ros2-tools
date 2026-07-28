@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
-package_name = 'oomwoo_clean'
+package_name = 'oomwoo_clean_ui'
 
 setup(
     name=package_name,
@@ -24,12 +27,16 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'),
+            glob('config/*.rviz')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Ilia O.',
     maintainer_email='makers-pet@users.noreply.github.com',
-    description='Cleaning-specific navigation for OOMWOO (cleaning-with-map).',
+    description='RViz debug tooling for OOMWOO cleaning.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
