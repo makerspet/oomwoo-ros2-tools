@@ -2,7 +2,7 @@
 
 Milestone-specific documents and measurement snapshots from the initial M1/M2
 delivery of these packages. Kept for provenance; **not** current usage docs — for
-building and running see [QUICKSTART.md](../../QUICKSTART.md).
+building and running see the [Quickstart in the README](../../README.md#quickstart--reproduce-the-regressions).
 
 - **`HANDOVER.md`** — the M1/M2 handover notes (design decisions, what was built).
 - **`results/`** — banked coverage/localization measurement runs (JSON) with their
