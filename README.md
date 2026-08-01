@@ -29,7 +29,9 @@ map-and-clean live here so they build, test and version together.
   in Gazebo: sim bring-up, a ground-truth pose publisher, the coverage meter, the
   kidnap injector, and the CLI regression runners.
 - **`oomwoo_clean`** — cleaning-specific navigation, the home for the
-  from-scratch cleaning-with-map rebuild.
+  from-scratch cleaning-with-map rebuild. Ships the drive-to-goal behavior
+  (`cleaning.launch.py`) and a nav-with-map launch (`nav.launch.py`); see
+  [Cleaning with a map](#cleaning-with-a-map) below.
 - **`oomwoo_clean_ui`** — RViz debug tooling for cleaning
   (`cleaning_debug.launch.py`): a ready-made layout with the coverage plan,
   robot, LiDAR, map and covered grid pre-added. Split out so its `rviz2`
@@ -72,6 +74,38 @@ ros2 topic echo /bumper_right/contact
 # save the map you built
 ros2 run nav2_map_server map_saver_cli -f ~/maps/map
 ```
+
+## Cleaning with a map
+
+Drive-to-goal cleaning on a loaded map: drop a goal in RViz, watch the robot
+navigate there with Nav2, and (in sim) watch the floor marked clean wherever it
+goes. It is split into composable commands — one per terminal — so you see each
+one's logs live, and can swap any layer independently (a physical robot for the
+sim, or another behavior for cleaning).
+
+```bash
+# 1. robot source — Gazebo sim (GUI on, living_room by default).
+#    Swap for a real robot: ros2 launch oomwoo_bringup physical.launch.py
+ros2 launch oomwoo_gazebo world.launch.py
+
+# 2. navigation on the existing map (AMCL + Nav2). coverage:=true adds the
+#    sim-only ground-truth coverage meter (off by default).
+ros2 launch oomwoo_clean nav.launch.py use_sim_time:=true coverage:=true
+
+# 3. cleaning behavior — bridges RViz 2D Goal Pose to Nav2 and marks coverage.
+#    Swap for another behavior later (docking, ...).
+ros2 launch oomwoo_clean cleaning.launch.py
+
+# viewer — RViz with the covered grid and the goal/pose tools
+ros2 launch oomwoo_clean_ui cleaning_debug.launch.py
+```
+
+In RViz: set the start with **2D Pose Estimate**, then drop a **2D Goal Pose** —
+the robot drives there and the covered grid fills in along its path. The nav and
+cleaning commands are robot-agnostic; only command 1 changes between sim and a
+real robot. Coverage marking is ground-truth based, so it works in sim only (a
+real robot needs a belief-based estimator, not built yet); keep the sim spawn
+pose and `nav.launch.py`'s `x_pose`/`y_pose` in sync so the covered cells align.
 
 ## Quickstart — reproduce the regressions
 
