@@ -100,12 +100,17 @@ ros2 launch oomwoo_clean cleaning.launch.py
 ros2 launch oomwoo_clean_ui cleaning_debug.launch.py
 ```
 
-In RViz: set the start with **2D Pose Estimate**, then drop a **2D Goal Pose** —
-the robot drives there and the covered grid fills in along its path. The nav and
-cleaning commands are robot-agnostic; only command 1 changes between sim and a
-real robot. Coverage marking is ground-truth based, so it works in sim only (a
-real robot needs a belief-based estimator, not built yet); keep the sim spawn
-pose and `nav.launch.py`'s `x_pose`/`y_pose` in sync so the covered cells align.
+In RViz, drop a **2D Goal Pose** — the robot drives there and the covered grid
+fills in along its path. In sim the robot **localizes itself** at the spawn pose
+(`nav.launch.py` seeds AMCL, `auto_localize:=true` by default), so no manual 2D
+Pose Estimate is needed; keep the sim spawn pose and `nav.launch.py`'s
+`x_pose`/`y_pose` in sync so it lands in the right place.
+
+The nav and cleaning commands are robot-agnostic; only command 1 changes between
+sim and a real robot. On a real robot, pass `auto_localize:=false` (its pose is
+unknown — seed it with RViz's **2D Pose Estimate**) and leave `coverage` off:
+coverage marking is ground-truth based, so it works in sim only (a real robot
+needs a belief-based estimator, not built yet).
 
 ## Quickstart — reproduce the regressions
 

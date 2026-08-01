@@ -20,11 +20,16 @@ separately-launched robot source (`oomwoo_gazebo world.launch.py` in sim, or
 (`oomwoo_clean_ui cleaning_debug.launch.py`). Uses the selected robot's own
 navigation.yaml, so the same command follows `kaia use <robot>`.
 
+auto_localize:=true (default) seeds AMCL at the spawn pose so the sim localizes
+itself -- no manual RViz 2D Pose Estimate. Set it false on a real robot (you do
+not know the pose there) and seed with the 2D Pose Estimate instead.
+
 coverage:=true adds the ground-truth coverage meter that marks the floor clean
 as the robot drives. That meter is ground-truth based, so it is SIM ONLY; on a
-real robot leave coverage off (a belief-based estimator does not exist yet). Its
-spawn pose must match the sim's (world.launch.py defaults), so the covered cells
-line up with the map.
+real robot leave coverage off (a belief-based estimator does not exist yet). Both
+auto_localize and coverage use the spawn pose, which must match the sim's
+(world.launch.py defaults), so the robot localizes and the covered cells line up
+with the map.
 """
 
 import os
@@ -82,9 +87,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('robot_model', default_value=''),
         DeclareLaunchArgument('map', default_value=default_map),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        # auto-seed AMCL at the spawn pose (sim); false on a real robot
+        DeclareLaunchArgument('auto_localize', default_value='true'),
         # ground-truth coverage marking: sim only, off by default
         DeclareLaunchArgument('coverage', default_value='false'),
-        # must match the sim spawn (world.launch.py defaults) so coverage aligns
+        # must match the sim spawn (world.launch.py defaults) so the robot
+        # localizes and coverage aligns
         DeclareLaunchArgument('x_pose', default_value='-2.0'),
         DeclareLaunchArgument('y_pose', default_value='-0.5'),
         DeclareLaunchArgument('yaw', default_value='0.0'),
@@ -114,4 +122,18 @@ def generate_launch_description() -> LaunchDescription:
                     ('ground_truth/pose', '/ground_truth/pose'),
                     ('cleaning_active', '/coverage_planner/cleaning_active')])
 
-    return LaunchDescription(args + [nav, ground_truth, coverage_meter])
+    # Seed AMCL at the spawn pose so the sim localizes without a manual RViz
+    # 2D Pose Estimate. initialpose_pub (re)publishes /initialpose until AMCL
+    # localizes, then exits; the robot's AMCL does not self-seed, so this is
+    # what puts map->odom on the tree.
+    seed = Node(
+        package='oomwoo_sim_support', executable='initialpose_pub',
+        name='initialpose_pub', output='screen',
+        condition=IfCondition(LaunchConfiguration('auto_localize')),
+        parameters=[{'use_sim_time': True, 'reseed_after_sec': 1.0,
+                     'x': ParameterValue(x0, value_type=float),
+                     'y': ParameterValue(y0, value_type=float),
+                     'yaw': ParameterValue(yaw0, value_type=float)}])
+
+    return LaunchDescription(
+        args + [nav, ground_truth, coverage_meter, seed])
