@@ -60,7 +60,11 @@ class InitialPoseGate(Node):
 
         self.localized = False
         self.reseeds = 0
-        self.start = self.get_clock().now()
+        # Captured on the first tick, not here: under use_sim_time get_clock()
+        # can read 0 at construction (no /clock yet), which would make every
+        # _elapsed() look like the absolute sim time and trip the fail-open
+        # before we ever seed. Baseline once the clock is actually running.
+        self.start = None
 
         self.pub = self.create_publisher(
             PoseWithCovarianceStamped, 'initialpose', 10)
@@ -93,6 +97,10 @@ class InitialPoseGate(Node):
         self.pub.publish(msg)
 
     def _tick(self) -> None:
+        if self.start is None:
+            # clock is running now; baseline elapsed from here
+            self.start = self.get_clock().now()
+            return
         el = self._elapsed()
         if self.localized:
             self.get_logger().info(
