@@ -76,8 +76,11 @@ def generate_launch_description() -> LaunchDescription:
     true_robot_radius = 0.1745
     coverage_target = 0.90
 
+    # the WORLD-ALIGNED living_room map (origin -2.75, covers the spawn); the
+    # oomwoo_gazebo copy has a different origin that excludes the -2,-0.5 spawn
     default_map = os.path.join(
-        get_package_share_directory('oomwoo_gazebo'), 'map', 'living_room.yaml')
+        get_package_share_directory('oomwoo_sim_support'),
+        'maps', 'living_room.yaml')
     x0 = LaunchConfiguration('x_pose')
     y0 = LaunchConfiguration('y_pose')
     yaw0 = LaunchConfiguration('yaw')
