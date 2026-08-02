@@ -112,6 +112,17 @@ unknown — seed it with RViz's **2D Pose Estimate**) and leave `coverage` off:
 coverage marking is ground-truth based, so it works in sim only (a real robot
 needs a belief-based estimator, not built yet).
 
+**Debugging with perfect localization.** The sim's odometry is noise-free, so
+you can take AMCL (and any map/scan mismatch) out of the picture entirely:
+
+```bash
+ros2 launch oomwoo_clean nav.launch.py use_sim_time:=true localization:=truth
+```
+
+`localization:=truth` (sim only) skips AMCL and publishes a static identity
+`map→odom`, so `map→base` tracks the true pose exactly — useful for isolating
+navigation, map, or tuning issues from localization error.
+
 ## Quickstart — reproduce the regressions
 
 Copy-paste. Needs Docker on a native **x86-64 Linux** box (not ARM / not an
