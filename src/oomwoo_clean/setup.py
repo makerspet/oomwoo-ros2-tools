@@ -40,6 +40,7 @@ setup(
     entry_points={
         'console_scripts': [
             'clean_to_goal = oomwoo_clean.clean_to_goal_node:main',
+            'wall_clean = oomwoo_clean.wall_clean_node:main',
         ],
     },
 )
