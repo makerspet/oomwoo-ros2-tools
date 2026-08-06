@@ -27,7 +27,9 @@ The turn angle depends on which bumper hit:
   left  only -> large  (a corner: swing left onto the next wall)
   both       -> medium (head-on)
 
-All motion values are ROS parameters, fed by the launch from `kaia set clean.*`.
+All motion values are ROS parameters: the launch seeds them from
+`kaia set clean.*`, and they are live -- `ros2 param set /wall_clean arc_omega
+0.03` retunes the running robot without a relaunch.
 
 Interfaces:
   subscribes  bumper_left/contact   ros_gz_interfaces/Contacts
@@ -39,6 +41,8 @@ Interfaces:
 import math
 
 from geometry_msgs.msg import Twist
+
+from rcl_interfaces.msg import SetParametersResult
 
 import rclpy
 from rclpy.duration import Duration
@@ -97,8 +101,33 @@ class WallClean(Node):
         self.state = CRUISE
         self.until = self.get_clock().now()
         self.create_timer(1.0 / hz, self._tick)
+        # live tuning: `ros2 param set /wall_clean arc_omega 0.03`
+        self.add_on_set_parameters_callback(self._on_params)
         self.get_logger().info(
             'wall_clean: reactive right-wall cleaning -- Ctrl-C to stop')
+
+    def _on_params(self, params) -> SetParametersResult:
+        # apply live parameter changes so tuning takes effect without a relaunch
+        for p in params:
+            if p.name == 'v_cruise':
+                self.v_cruise = p.value
+            elif p.name == 'arc_omega':
+                self.arc_omega = p.value
+            elif p.name == 'v_back':
+                self.v_back = p.value
+            elif p.name == 'backoff_s':
+                self.backoff_s = p.value
+            elif p.name == 'turn_speed':
+                self.turn_speed = p.value
+            elif p.name == 'turn_right_deg':
+                self.turn_deg['right'] = p.value
+            elif p.name == 'turn_left_deg':
+                self.turn_deg['left'] = p.value
+            elif p.name == 'turn_both_deg':
+                self.turn_deg['both'] = p.value
+            elif p.name == 'bumper_fresh_sec':
+                self.fresh = Duration(seconds=p.value)
+        return SetParametersResult(successful=True)
 
     def _left_cb(self, msg: Contacts) -> None:
         if msg.contacts:
