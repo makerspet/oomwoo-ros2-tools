@@ -1,5 +1,15 @@
 name: ci
 on: [push, pull_request]
+
+env:
+  # oomwoo_bringup depends on packages built from SOURCE elsewhere in the
+  # umbrella workspace (oomwoo-one, kaiaai, makerspet_mini). They are not
+  # released to jazzy and are not rosdep keys, so in this repo's isolated CI
+  # (only its own packages in src/) both gates must skip them -- exactly as
+  # ros_gz_sim/ros_gz_bridge are skipped below. They resolve at full install,
+  # where every repo is cloned into one workspace.
+  SOURCE_SIBLINGS: "oomwoo_one makerspet_mini kaiaai kaiaai_telemetry kaiaai_teleop"
+
 jobs:
   dependency-lint:
     runs-on: ubuntu-24.04
@@ -9,7 +19,7 @@ jobs:
       # every declared package.xml key must resolve (jazzy pkg or rosdep key),
       # and every third-party import must be declared — both directions of the
       # bug class that shipped `<exec_depend>numpy</exec_depend>`.
-      - run: python3 tools/check_rosdeps.py
+      - run: python3 tools/check_rosdeps.py --skip-keys "$SOURCE_SIBLINGS"
 
   colcon-build-test:
     runs-on: ubuntu-24.04
@@ -21,7 +31,7 @@ jobs:
           apt-get update
           rosdep update --rosdistro jazzy
           rosdep install --from-paths src --ignore-src -y \
-            --skip-keys "ros_gz_sim ros_gz_bridge"
+            --skip-keys "ros_gz_sim ros_gz_bridge $SOURCE_SIBLINGS"
           # belt-and-braces: the lint suites must exist even if a rosdep
           # profile skips test-type dependencies
           apt-get install -y ros-jazzy-ament-flake8 ros-jazzy-ament-pep257 \

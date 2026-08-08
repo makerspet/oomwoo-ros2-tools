@@ -56,7 +56,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('src', nargs='?', default='src')
     ap.add_argument('--distro', default='jazzy')
+    ap.add_argument('--skip-keys', default='',
+                    help='space/comma-separated depend keys to exclude from '
+                         'check 1 — for workspace source-sibling packages '
+                         'built from source (not released, not rosdep keys), '
+                         'mirroring `rosdep install --skip-keys`')
     a = ap.parse_args()
+    skip = {k for k in re.split(r'[,\s]+', a.skip_keys.strip()) if k}
 
     rosdep = {}
     rosdep.update(fetch(f'{ROSDISTRO}/rosdep/base.yaml', '/tmp/_rosdep_base.yaml'))
@@ -76,6 +82,8 @@ def main():
                               open(pkg_xml).read()))
 
         for d in sorted(deps):                       # check 1
+            if d in skip:
+                continue                             # source-sibling package
             if d not in ros_pkgs and d not in rosdep:
                 findings.append(
                     f'{pkg_xml}: "{d}" is neither a {a.distro} package nor a '
