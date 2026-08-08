@@ -14,23 +14,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, re
+import os
+
 from ament_index_python.packages import get_package_share_path
-from launch import LaunchDescription, LaunchContext
+
+from kaiaai import config
+
+from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration
+
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from kaiaai import config
 
 
 def make_node(context: LaunchContext, urdf_path):
-    urdf_path_str = context.perform_substitution(urdf_path)
+    robot_description = ParameterValue(
+        Command(['xacro ', urdf_path]), value_type=str)
 
-    robot_description = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
-
-    print("URDF file : {}".format(urdf_path))
+    print('URDF file : {}'.format(urdf_path))
 
     return [
         Node(
@@ -42,7 +45,6 @@ def make_node(context: LaunchContext, urdf_path):
 
 
 def generate_launch_description():
-
     robot_model_str = config.get_var('robot.model')
 
     default_urdf_path = os.path.join(
@@ -53,7 +55,6 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             name='gui',
-            # default_value='false',
             default_value='true',
             choices=['true', 'false'],
             description='Enable joint state publisher GUI'
@@ -61,7 +62,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             name='urdf_path',
             default_value=default_urdf_path,
-            description='A full pathname to the robot description .urdf.xacro file'
+            description='A full pathname to the robot description '
+                        '.urdf.xacro file'
         ),
         OpaqueFunction(function=make_node, args=[
             LaunchConfiguration('urdf_path'),

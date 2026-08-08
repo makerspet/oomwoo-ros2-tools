@@ -15,15 +15,17 @@
 # limitations under the License.
 
 import os
-import re
+
 from ament_index_python.packages import get_package_share_path
-from launch import LaunchDescription, LaunchContext
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, LogInfo
+
+from kaiaai import config
+
+from launch import LaunchContext, LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import Command, LaunchConfiguration
+
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from launch.conditions import UnlessCondition
-from kaiaai import config
 
 
 def make_nodes(context: LaunchContext, robot_model, lidar_model, use_sim_time):
@@ -32,22 +34,23 @@ def make_nodes(context: LaunchContext, robot_model, lidar_model, use_sim_time):
     use_sim_time_str = context.perform_substitution(use_sim_time)
 
     if len(robot_model_str) == 0:
-      robot_model_str = config.get_var('robot.model')
+        robot_model_str = config.get_var('robot.model')
 
     description_package_path = get_package_share_path(robot_model_str)
     telem_package_path = get_package_share_path('kaiaai_telemetry')
 
     urdf_path_name = os.path.join(
-      description_package_path,
-      'urdf',
-      'robot.urdf.xacro')
+        description_package_path,
+        'urdf',
+        'robot.urdf.xacro')
 
     config_telem_path_name = os.path.join(
-      telem_package_path,
-      'config',
-      'telem.yaml')
+        telem_package_path,
+        'config',
+        'telem.yaml')
 
-    robot_description = ParameterValue(Command(['xacro ', urdf_path_name]), value_type=str)
+    robot_description = ParameterValue(
+        Command(['xacro ', urdf_path_name]), value_type=str)
 
     config_override_path_name = os.path.join(
         description_package_path,
@@ -55,28 +58,25 @@ def make_nodes(context: LaunchContext, robot_model, lidar_model, use_sim_time):
         'telem.yaml'
     )
 
-    lidar_model = lidar_model_str if len(lidar_model_str) > 0 else \
-      robot_model_str + ' default'
+    lidar_model_name = lidar_model_str if len(lidar_model_str) > 0 \
+        else robot_model_str + ' default'
 
     print('URDF file   : {}'.format(urdf_path_name))
     print('Telem params: {}'.format(config_telem_path_name))
     print('Model params: {}'.format(config_override_path_name))
-    print('LiDAR model : {}'.format(lidar_model))
+    print('LiDAR model : {}'.format(lidar_model_name))
 
-    LogInfo(msg='URDF file   : {}'.format(urdf_path_name))
-    LogInfo(msg='Telem params: {}'.format(config_telem_path_name))
-    LogInfo(msg='Model params: {}'.format(config_override_path_name))
-    LogInfo(msg='LiDAR model : {}'.format(lidar_model))
+    telem_params = [config_telem_path_name, config_override_path_name]
+    if len(lidar_model_str) > 0:
+        telem_params = telem_params + [
+            {'laser_scan.lidar_model': lidar_model_str}]
 
     return [
         Node(
-            package="kaiaai_telemetry",
-            executable="telem",
-            output="screen",
-            parameters = [config_telem_path_name, config_override_path_name,
-              {'laser_scan.lidar_model': lidar_model_str}]
-              if len(lidar_model_str) > 0 else
-              [config_telem_path_name, config_override_path_name]
+            package='kaiaai_telemetry',
+            executable='telem',
+            output='screen',
+            parameters=telem_params
         ),
         Node(
             package='robot_state_publisher',
@@ -92,7 +92,6 @@ def make_nodes(context: LaunchContext, robot_model, lidar_model, use_sim_time):
 
 
 def generate_launch_description():
-
     return LaunchDescription([
         DeclareLaunchArgument(
             name='robot_model',
@@ -103,10 +102,10 @@ def generate_launch_description():
             name='lidar_model',
             default_value='',
             choices=['YDLIDAR-X4', 'XIAOMI-LDS02RR', 'YDLIDAR-X2-X2L',
-              '3IROBOTIX-DELTA-2G', 'YDLIDAR-X3-PRO', 'YDLIDAR-X3',
-              'NEATO-XV11', 'SLAMTEC-RPLIDAR-A1', '3IROBOTIX-DELTA-2A',
-              '3IROBOTIX-DELTA-2B', 'LDROBOT-LD14P', 'CAMSENSE-X1',
-              'YDLIDAR-SCL', ''],  # 'AUTO'
+                     '3IROBOTIX-DELTA-2G', 'YDLIDAR-X3-PRO', 'YDLIDAR-X3',
+                     'NEATO-XV11', 'SLAMTEC-RPLIDAR-A1', '3IROBOTIX-DELTA-2A',
+                     '3IROBOTIX-DELTA-2B', 'LDROBOT-LD14P', 'CAMSENSE-X1',
+                     'YDLIDAR-SCL', ''],  # 'AUTO'
             description='LiDAR model'
         ),
         DeclareLaunchArgument(
@@ -119,8 +118,8 @@ def generate_launch_description():
             package='micro_ros_agent',
             executable='micro_ros_agent',
             name='micro_ros_agent',
-            output="screen",
-            arguments=["udp4", "-p", "8888"]  # , "-v6"
+            output='screen',
+            arguments=['udp4', '-p', '8888']  # , '-v6'
         ),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('robot_model'),

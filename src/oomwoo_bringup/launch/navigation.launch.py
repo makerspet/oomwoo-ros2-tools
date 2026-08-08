@@ -15,24 +15,29 @@
 # limitations under the License.
 
 import os
+
 from ament_index_python.packages import get_package_share_path
-from launch import LaunchDescription, LaunchContext
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+
 from kaiaai import config
 
+from launch import LaunchContext, LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction)
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 
-def make_nodes(context: LaunchContext, robot_model, map, use_sim_time, slam):
+from launch_ros.actions import Node
+
+
+def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
+               slam):
     robot_model_str = context.perform_substitution(robot_model)
-    map_path_str = context.perform_substitution(map)
+    map_path_str = context.perform_substitution(map_arg)
     use_sim_time_str = context.perform_substitution(use_sim_time)
     slam_str = context.perform_substitution(slam)
 
     if len(robot_model_str) == 0:
-      robot_model_str = config.get_var('robot.model')
+        robot_model_str = config.get_var('robot.model')
 
     description_package_path = get_package_share_path(robot_model_str)
 
@@ -72,8 +77,8 @@ def make_nodes(context: LaunchContext, robot_model, map, use_sim_time, slam):
         )
     ]
 
-def generate_launch_description():
 
+def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             name='robot_model',

@@ -19,8 +19,9 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
+
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -32,7 +33,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'resolution',
             default_value=resolution,
-            description='Resolution of a grid cell in the published occupancy grid'),
+            description='Resolution of a grid cell in the published occupancy '
+                        'grid'),
 
         DeclareLaunchArgument(
             'publish_period_sec',
@@ -50,5 +52,6 @@ def generate_launch_description():
             name='cartographer_occupancy_grid_node',
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
-            arguments=['-resolution', resolution, '-publish_period_sec', publish_period_sec]),
+            arguments=['-resolution', resolution,
+                       '-publish_period_sec', publish_period_sec]),
     ])

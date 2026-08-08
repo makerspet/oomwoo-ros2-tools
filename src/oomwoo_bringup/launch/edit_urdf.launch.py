@@ -14,39 +14,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, re
+import os
+
 from ament_index_python.packages import get_package_share_path
-from launch import LaunchDescription, LaunchContext
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.actions import ExecuteProcess
-from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import Command, LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
+
 from kaiaai import config
+
+from launch import LaunchContext, LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+
+from launch_ros.actions import Node
+
 
 def make_nodes(context: LaunchContext, robot_model, gui):
     robot_model_str = context.perform_substitution(robot_model)
     gui_str = context.perform_substitution(gui)
 
     if len(robot_model_str) == 0:
-      robot_model_str = config.get_var('robot.model')
+        robot_model_str = config.get_var('robot.model')
 
     description_package_path = get_package_share_path(robot_model_str)
 
     urdf_path_name = os.path.join(
-      description_package_path,
-      'urdf',
-#      robot_model_str + '.urdf.xacro')
-      'robot.urdf.xacro')
+        description_package_path,
+        'urdf',
+        'robot.urdf.xacro')
 
     rviz_config_path = os.path.join(
         description_package_path,
         'rviz',
         'inspect_urdf.rviz')
 
-    print("Rviz2 config : {}".format(rviz_config_path))
-    print("URDF  config : {}".format(urdf_path_name))
+    print('Rviz2 config : {}'.format(rviz_config_path))
+    print('URDF  config : {}'.format(urdf_path_name))
 
     return [
         ExecuteProcess(
@@ -70,7 +71,6 @@ def make_nodes(context: LaunchContext, robot_model, gui):
 
 
 def generate_launch_description():
-
     return LaunchDescription([
         DeclareLaunchArgument(
             name='robot_model',

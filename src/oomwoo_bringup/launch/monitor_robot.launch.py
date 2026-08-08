@@ -14,13 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, re
+import os
+
 from ament_index_python.packages import get_package_share_path
-from launch import LaunchDescription, LaunchContext
-from launch_ros.actions import Node
+
+from kaiaai import config
+
+from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from kaiaai import config
+
+from launch_ros.actions import Node
 
 
 def make_rviz2_node(context: LaunchContext, robot_model, use_sim_time):
@@ -28,13 +32,13 @@ def make_rviz2_node(context: LaunchContext, robot_model, use_sim_time):
     use_sim_time_str = context.perform_substitution(use_sim_time)
 
     if len(robot_model_str) == 0:
-      robot_model_str = config.get_var('robot.model')
+        robot_model_str = config.get_var('robot.model')
 
     rviz_config_path = os.path.join(
         get_package_share_path(robot_model_str),
         'rviz',
         'monitor_robot.rviz')
-    print("Rviz2 config : {}".format(rviz_config_path))
+    print('Rviz2 config : {}'.format(rviz_config_path))
 
     return [
         Node(
@@ -47,8 +51,8 @@ def make_rviz2_node(context: LaunchContext, robot_model, use_sim_time):
         )
     ]
 
-def generate_launch_description():
 
+def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             name='robot_model',
