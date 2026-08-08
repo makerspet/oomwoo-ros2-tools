@@ -74,7 +74,7 @@ class WallClean(Node):
     def __init__(self) -> None:
         super().__init__('wall_clean')
         self.v_cruise = self.declare_parameter('v_cruise', 0.15).value
-        self.arc_omega = self.declare_parameter('arc_omega', 0.05).value
+        self.arc_omega = self.declare_parameter('arc_omega', 0.1).value
         self.v_back = self.declare_parameter('v_back', 0.10).value
         self.backoff_s = self.declare_parameter('backoff_s', 0.5).value
         self.turn_speed = self.declare_parameter('turn_speed', 0.7).value
@@ -98,6 +98,10 @@ class WallClean(Node):
         self._bump_left_t = None
         self._bump_right_t = None
         self._side = 'both'
+        # First leg: I aim the robot at the wall with teleop and launch this, so
+        # the approach should be a STRAIGHT line (no arc to compensate for). The
+        # arc kicks in only after the first bump, once we're following the wall.
+        self._first_leg = True
         self.state = CRUISE
         self.until = self.get_clock().now()
         self.create_timer(1.0 / hz, self._tick)
@@ -149,11 +153,14 @@ class WallClean(Node):
     def _tick(self) -> None:
         now = self.get_clock().now()
         if self.state == CRUISE:
-            # forward + gentle RIGHT arc, drifting toward the wall on the right
-            self._drive(self.v_cruise, -self.arc_omega)
+            # forward + gentle RIGHT arc, drifting toward the wall on the right;
+            # the very first leg (teleop-aimed approach) drives dead straight
+            arc = 0.0 if self._first_leg else -self.arc_omega
+            self._drive(self.v_cruise, arc)
             left = self._pressed(self._bump_left_t, now)
             right = self._pressed(self._bump_right_t, now)
             if left or right:
+                self._first_leg = False   # from here on, arc toward the wall
                 self._side = 'both' if left and right else (
                     'left' if left else 'right')
                 self.state = BACKOFF

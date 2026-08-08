@@ -33,7 +33,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 # name -> built-in default; each is overridable by kaia (clean.<name>) then :=
 CLEAN_PARAMS = {
     'v_cruise': 0.15,       # forward cleaning speed (m/s)
-    'arc_omega': 0.05,       # gentle right-arc rate while cruising (rad/s)
+    'arc_omega': 0.1,        # gentle right-arc rate while cruising (rad/s)
     'v_back': 0.10,         # backoff reverse speed (m/s)
     'backoff_s': 0.5,       # backoff duration (s)
     'turn_speed': 0.7,      # angular speed while turning left (rad/s)
