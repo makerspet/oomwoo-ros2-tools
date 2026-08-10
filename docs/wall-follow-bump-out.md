@@ -1,7 +1,9 @@
 # Bump-out wall following — how it works
 
 *Status: implemented.* Node: [`oomwoo_clean/wall_clean_node.py`](../src/oomwoo_clean/oomwoo_clean/wall_clean_node.py),
-launch: `ros2 launch oomwoo_clean wall_clean.launch.py`.
+launch: `ros2 launch oomwoo_clean wall_clean_bump_out.launch.py`
+(`wall_clean.launch.py` is reserved for the fully-featured wall cleaning and
+currently forwards here).
 
 The old, pre-sensor way a vacuum cleans along an edge — before wall/ToF sensors
 or LiDAR were used for this. It keeps the wall on the **right** and traces the
@@ -84,7 +86,7 @@ set at launch).
 
 ```bash
 # 1. teleop-aim the robot at the wall, then:
-ros2 launch oomwoo_clean wall_clean.launch.py use_sim_time:=true
+ros2 launch oomwoo_clean wall_clean_bump_out.launch.py use_sim_time:=true
 # 2. tune live while it runs (persists for next launch too):
 kaia set clean.arc_omega 0.15
 kaia set clean.turn_left_deg 80

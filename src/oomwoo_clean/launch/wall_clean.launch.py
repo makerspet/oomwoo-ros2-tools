@@ -12,62 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Reactive bump-based wall cleaning behavior (swaps in for the cleaning command).
+Wall cleaning entry point, reserved for fully-featured (sensor-based) cleaning.
 
-Runs the wall_clean node -- no Nav2, no map, just bumpers -> /cmd_vel. Position
-the robot at a wall with teleop first, then start this. Every motion value is
-read from `kaia set clean.<name>` for the active robot (a launch arg still wins,
-e.g. v_cruise:=0.2), so you can tune it live and relaunch:
-
-  kaia set clean.v_cruise 0.2
-  kaia set clean.turn_left_deg 80
+For now it forwards to the reactive bump-out clean
+(wall_clean_bump_out.launch.py, see docs/wall-follow-bump-out.md), so
+`ros2 launch oomwoo_clean wall_clean.launch.py` keeps working unchanged: every
+argument (use_sim_time, the clean.* motion params) passes straight through. When
+the fully-featured wall cleaning lands, its launch replaces the body below.
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
-
-# name -> built-in default; each is overridable by kaia (clean.<name>) then :=
-CLEAN_PARAMS = {
-    'v_cruise': 0.15,       # forward cleaning speed (m/s)
-    'arc_omega': 0.1,        # gentle right-arc rate while cruising (rad/s)
-    'v_back': 0.10,         # backoff reverse speed (m/s)
-    'backoff_s': 0.5,       # backoff duration (s)
-    'turn_speed': 0.7,      # angular speed while turning left (rad/s)
-    'turn_right_deg': 20.0,  # right bumper: small peel-off
-    'turn_left_deg': 90.0,   # left bumper: round a corner
-    'turn_both_deg': 60.0,   # both bumpers: head-on
-}
-
-
-def _cfg(name, default):
-    # Default from `kaia set clean.<name>` for the active robot, else built-in.
-    try:
-        from kaiaai import config  # dep-optional: guarded, falls back
-        value = config.get_var(name)
-        return default if value is None else value
-    except Exception:
-        return default
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description() -> LaunchDescription:
-    args = [DeclareLaunchArgument('use_sim_time', default_value='true')]
-    params = {'use_sim_time': ParameterValue(
-        LaunchConfiguration('use_sim_time'), value_type=bool)}
-    for name, default in CLEAN_PARAMS.items():
-        args.append(DeclareLaunchArgument(
-            name, default_value=str(_cfg('clean.' + name, default))))
-        params[name] = ParameterValue(
-            LaunchConfiguration(name), value_type=float)
-
-    node = Node(
-        package='oomwoo_clean', executable='wall_clean', output='screen',
-        parameters=[params],
-        remappings=[('cmd_vel', '/cmd_vel'),
-                    ('bumper_left/contact', '/bumper_left/contact'),
-                    ('bumper_right/contact', '/bumper_right/contact'),
-                    ('cleaning_active', '/coverage_planner/cleaning_active')])
-    return LaunchDescription(args + [node])
+    bump_out = os.path.join(
+        get_package_share_directory('oomwoo_clean'),
+        'launch', 'wall_clean_bump_out.launch.py')
+    return LaunchDescription([
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(bump_out)),
+    ])
