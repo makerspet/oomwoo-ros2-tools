@@ -16,11 +16,16 @@
 Reactive bump-based wall cleaning (right wall, counterclockwise).
 
 The old, pre-sensor way a vacuum cleans edges: cruise forward on a gentle arc
-toward the wall on the RIGHT, and on a bumper contact back off and turn LEFT --
-peeling along the wall and rounding corners, tracing the room counterclockwise.
-No LiDAR, no map, no localization -- bumpers -> /cmd_vel only. Position the robot
-at a wall with teleop first, then start this; it publishes cleaning_active so the
-coverage_meter scores it. Stop with Ctrl-C (no loop-closure yet).
+toward the wall on the RIGHT, and on a bumper contact back OUT along the arc it
+drove in on, then turn LEFT -- peeling along the wall and rounding corners,
+tracing the room counterclockwise. No LiDAR, no map, no localization -- bumpers
+-> /cmd_vel only. Position the robot at a wall with teleop first, then start
+this; it publishes cleaning_active so the coverage_meter scores it. Stop with
+Ctrl-C (no loop-closure yet).
+
+Back-out retraces the entry arc (reversed) rather than reversing in a straight
+line: retracing keeps the robot on ground it just cleared, so it is less likely
+to wedge somewhere new while pulling out of a contact.
 
 The turn angle depends on which bumper hit:
   right only -> small  (still hugging this wall, just peel off)
@@ -102,6 +107,9 @@ class WallClean(Node):
         # the approach should be a STRAIGHT line (no arc to compensate for). The
         # arc kicks in only after the first bump, once we're following the wall.
         self._first_leg = True
+        # angular rate of the cruise leg we're on, captured at bump time so
+        # BACKOFF can retrace that arc in reverse (0.0 = the straight first leg).
+        self._entry_arc = 0.0
         self.state = CRUISE
         self.until = self.get_clock().now()
         self.create_timer(1.0 / hz, self._tick)
@@ -161,12 +169,19 @@ class WallClean(Node):
             right = self._pressed(self._bump_right_t, now)
             if left or right:
                 self._first_leg = False   # from here on, arc toward the wall
+                self._entry_arc = arc     # remember this leg's arc to retrace it
                 self._side = 'both' if left and right else (
                     'left' if left else 'right')
                 self.state = BACKOFF
                 self.until = now + Duration(seconds=self.backoff_s)
         elif self.state == BACKOFF:
-            self._drive(-self.v_back, 0.0)              # reverse to unwedge
+            # Back OUT along the entry arc, reversed. Reversing a differential-
+            # drive path exactly means negating BOTH linear and angular velocity,
+            # so at the backoff speed the retrace rate is -entry_arc scaled by
+            # v_back/v_cruise (same path curvature v_cruise/arc_omega, opposite
+            # travel direction). A straight first leg (entry_arc 0) backs straight.
+            retrace = -self._entry_arc * self.v_back / max(self.v_cruise, 1e-3)
+            self._drive(-self.v_back, retrace)
             if now >= self.until:
                 secs = math.radians(self.turn_deg[self._side]) \
                     / max(self.turn_speed, 1e-3)
