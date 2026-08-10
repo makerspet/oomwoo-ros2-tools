@@ -38,6 +38,7 @@ BUMP_PARAMS = {
     'resolution': 0.05,          # m/cell of the /bump_map grid
     'max_segment_gap': 1.0,      # m: gap above which a new wall run starts
     'refractory_sec': 0.8,       # s: min time between counted bumps
+    'approach_dt': 0.5,          # s: how far back to sample the approach pose
 }
 
 

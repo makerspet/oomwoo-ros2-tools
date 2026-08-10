@@ -74,6 +74,15 @@ def main():
         for p in (data.get('release', {}) or {}).get('packages', [repo]):
             ros_pkgs.add(p)
 
+    # This workspace's own packages: an in-tree dep is resolvable (colcon builds
+    # it; `rosdep install --from-paths src --ignore-src` skips it), so it must
+    # not be flagged even though it is not released / not a rosdep key.
+    own = set()
+    for pkg_xml in glob.glob(os.path.join(a.src, '*', 'package.xml')):
+        match = re.search(r'<name>([^<]+)</name>', open(pkg_xml).read())
+        if match:
+            own.add(match.group(1).strip())
+
     findings = []
     for pkg_xml in sorted(glob.glob(os.path.join(a.src, '*', 'package.xml'))):
         pkg_dir = os.path.dirname(pkg_xml)
@@ -82,8 +91,8 @@ def main():
                               open(pkg_xml).read()))
 
         for d in sorted(deps):                       # check 1
-            if d in skip:
-                continue                             # source-sibling package
+            if d in skip or d in own:
+                continue                 # source-sibling / in-tree package
             if d not in ros_pkgs and d not in rosdep:
                 findings.append(
                     f'{pkg_xml}: "{d}" is neither a {a.distro} package nor a '
