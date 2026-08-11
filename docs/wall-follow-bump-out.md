@@ -22,7 +22,7 @@ A 20 Hz loop cycles three states:
 
 | State | Motion | Leaves when |
 |---|---|---|
-| **CRUISE** | forward `v_cruise` + gentle **right** arc `-arc_omega` (drifting into the wall) | a bumper fires → BACKOFF |
+| **CRUISE** | forward `v_cruise` + gentle **right** arc of radius `arc_radius` (drifting into the wall) | a bumper fires → BACKOFF |
 | **BACKOFF** | **backs OUT along the arc it drove in on** (see below), for `backoff_s` | timer elapses → TURN |
 | **TURN** | rotate **left** in place at `turn_speed`, by an angle that depends on which bumper hit | angle reached → CRUISE |
 
@@ -39,7 +39,8 @@ once it's actually following the wall.
 
 ## Backing out along the entry arc
 
-CRUISE curves into the wall on an arc (radius `v_cruise/arc_omega`). On contact,
+CRUISE curves into the wall on an arc of radius `arc_radius` (turn rate
+`v_cruise/arc_radius`). On contact,
 BACKOFF **retraces that arc in reverse** rather than reversing in a straight
 line. **Why:** retracing keeps the robot on the strip of floor it just drove
 through, so pulling out of a contact is far less likely to wedge it somewhere
@@ -72,7 +73,7 @@ retunes the *running* robot with no relaunch — see the
 | `clean.<name>` | Default | Meaning |
 |---|---|---|
 | `v_cruise` | 0.15 | forward cleaning speed (m/s) |
-| `arc_omega` | 0.1 | gentle right-arc rate while cruising (rad/s) |
+| `arc_radius` | 1.5 | cruise arc radius into the wall (m); turn rate is `v_cruise/arc_radius`, so the arc shape is speed-independent |
 | `v_back` | 0.10 | back-out reverse speed (m/s) |
 | `backoff_s` | 0.5 | back-out duration (s) → distance `v_back·backoff_s` |
 | `turn_speed` | 0.7 | angular speed while turning left (rad/s) |
@@ -88,7 +89,7 @@ set at launch).
 # 1. teleop-aim the robot at the wall, then:
 ros2 launch oomwoo_clean wall_clean_bump_out.launch.py use_sim_time:=true
 # 2. tune live while it runs (persists for next launch too):
-kaia set clean.arc_omega 0.15
+kaia set clean.arc_radius 1.0
 kaia set clean.turn_left_deg 80
 ```
 

@@ -33,8 +33,8 @@ The turn angle depends on which bumper hit:
   both       -> medium (head-on)
 
 All motion values are ROS parameters: the launch seeds them from
-`kaia set clean.*`, and they are live -- `ros2 param set /wall_clean arc_omega
-0.03` retunes the running robot without a relaunch.
+`kaia set clean.*`, and they are live -- `ros2 param set /wall_clean arc_radius
+2.0` retunes the running robot without a relaunch.
 
 Interfaces:
   subscribes  bumper_left/contact   ros_gz_interfaces/Contacts
@@ -79,7 +79,7 @@ class WallClean(Node):
     def __init__(self) -> None:
         super().__init__('wall_clean')
         self.v_cruise = self.declare_parameter('v_cruise', 0.15).value
-        self.arc_omega = self.declare_parameter('arc_omega', 0.1).value
+        self.arc_radius = self.declare_parameter('arc_radius', 1.5).value
         self.v_back = self.declare_parameter('v_back', 0.10).value
         self.backoff_s = self.declare_parameter('backoff_s', 0.5).value
         self.turn_speed = self.declare_parameter('turn_speed', 0.7).value
@@ -113,7 +113,7 @@ class WallClean(Node):
         self.state = CRUISE
         self.until = self.get_clock().now()
         self.create_timer(1.0 / hz, self._tick)
-        # live tuning: `ros2 param set /wall_clean arc_omega 0.03`
+        # live tuning: `ros2 param set /wall_clean arc_radius 2.0`
         self.add_on_set_parameters_callback(self._on_params)
         self.get_logger().info(
             'wall_clean: reactive right-wall cleaning -- Ctrl-C to stop')
@@ -123,8 +123,8 @@ class WallClean(Node):
         for p in params:
             if p.name == 'v_cruise':
                 self.v_cruise = p.value
-            elif p.name == 'arc_omega':
-                self.arc_omega = p.value
+            elif p.name == 'arc_radius':
+                self.arc_radius = p.value
             elif p.name == 'v_back':
                 self.v_back = p.value
             elif p.name == 'backoff_s':
@@ -158,12 +158,18 @@ class WallClean(Node):
         msg.angular.z = float(ang)
         self.pub.publish(msg)
 
+    def _cruise_omega(self) -> float:
+        # Arc rate from the chosen radius: omega = v / r. Driving it from
+        # arc_radius (rather than a fixed omega) keeps the arc SHAPE constant
+        # at any cruise speed -- same path whether cruising fast or slow.
+        return self.v_cruise / max(self.arc_radius, 1e-3)
+
     def _tick(self) -> None:
         now = self.get_clock().now()
         if self.state == CRUISE:
             # forward + gentle RIGHT arc, drifting toward the wall on the right;
             # the very first leg (teleop-aimed approach) drives dead straight
-            arc = 0.0 if self._first_leg else -self.arc_omega
+            arc = 0.0 if self._first_leg else -self._cruise_omega()
             self._drive(self.v_cruise, arc)
             left = self._pressed(self._bump_left_t, now)
             right = self._pressed(self._bump_right_t, now)
@@ -178,7 +184,7 @@ class WallClean(Node):
             # Back OUT along the entry arc, reversed. Reversing a differential-
             # drive path exactly means negating BOTH linear and angular velocity,
             # so at the backoff speed the retrace rate is -entry_arc scaled by
-            # v_back/v_cruise (same path curvature v_cruise/arc_omega, opposite
+            # v_back/v_cruise (same path curvature, radius arc_radius, opposite
             # travel direction). A straight first leg (entry_arc 0) backs straight.
             retrace = -self._entry_arc * self.v_back / max(self.v_cruise, 1e-3)
             self._drive(-self.v_back, retrace)
