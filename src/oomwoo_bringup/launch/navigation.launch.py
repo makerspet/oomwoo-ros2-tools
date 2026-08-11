@@ -130,8 +130,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'auto_localize', default_value='sim',
             choices=['true', 'false', 'sim'],
-            description="Seed AMCL at (x_pose,y_pose,yaw) so map->odom appears "
-                        "without the manual 2D Pose Estimate. 'sim' = only when "
+            description='Seed AMCL at (x_pose,y_pose,yaw) so map->odom appears '
+                        'without the manual 2D Pose Estimate. sim = only when '
                         'use_sim_time:=true; real-robot bringup stays manual.'
         ),
         DeclareLaunchArgument(
