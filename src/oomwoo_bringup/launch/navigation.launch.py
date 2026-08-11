@@ -27,14 +27,16 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
-               slam):
+               slam, x_pose, y_pose, yaw, auto_localize):
     robot_model_str = context.perform_substitution(robot_model)
     map_path_str = context.perform_substitution(map_arg)
     use_sim_time_str = context.perform_substitution(use_sim_time)
     slam_str = context.perform_substitution(slam)
+    auto_str = context.perform_substitution(auto_localize)
 
     if len(robot_model_str) == 0:
         robot_model_str = config.get_var('robot.model')
@@ -55,7 +57,7 @@ def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
     print('Nav2  config : {}'.format(nav_config_path))
     print('Map          : {}'.format(map_path_str))
 
-    return [
+    nodes = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
                 os.path.join(get_package_share_path('nav2_bringup'), 'launch'),
@@ -76,6 +78,24 @@ def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
             parameters=[{'use_sim_time': use_sim_time_str.lower() == 'true'}],
         )
     ]
+
+    # Seed AMCL at the known start pose so map->odom appears WITHOUT the manual
+    # RViz "2D Pose Estimate". Only in localization mode (slam=False), and by
+    # default only in sim (auto_localize=sim); real-robot bringup stays manual.
+    # AMCL converges from a rough pose, so x_pose/y_pose/yaw need only be close.
+    localizing = slam_str.strip().lower() in ('false', '0')
+    auto = auto_str == 'true' or (
+        auto_str == 'sim' and use_sim_time_str.lower() == 'true')
+    if localizing and auto:
+        nodes.append(Node(
+            package='oomwoo_sim_support', executable='initialpose_pub',
+            name='initialpose_pub', output='screen',
+            parameters=[{
+                'use_sim_time': use_sim_time_str.lower() == 'true',
+                'x': ParameterValue(x_pose, value_type=float),
+                'y': ParameterValue(y_pose, value_type=float),
+                'yaw': ParameterValue(yaw, value_type=float)}]))
+    return nodes
 
 
 def generate_launch_description():
@@ -105,10 +125,32 @@ def generate_launch_description():
             choices=['True', 'False'],
             description='Navigate while creating a new map'
         ),
+        # Auto-localization: seed AMCL at the known start pose to skip the manual
+        # RViz "2D Pose Estimate". Defaults match oomwoo_gazebo world.launch.py.
+        DeclareLaunchArgument(
+            'auto_localize', default_value='sim',
+            choices=['true', 'false', 'sim'],
+            description="Seed AMCL at (x_pose,y_pose,yaw) so map->odom appears "
+                        "without the manual 2D Pose Estimate. 'sim' = only when "
+                        'use_sim_time:=true; real-robot bringup stays manual.'
+        ),
+        DeclareLaunchArgument(
+            'x_pose', default_value='-2.0',
+            description='Known start x for auto_localize (m)'),
+        DeclareLaunchArgument(
+            'y_pose', default_value='-0.5',
+            description='Known start y for auto_localize (m)'),
+        DeclareLaunchArgument(
+            'yaw', default_value='0.0',
+            description='Known start yaw for auto_localize (rad)'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('robot_model'),
             LaunchConfiguration('map'),
             LaunchConfiguration('use_sim_time'),
             LaunchConfiguration('slam'),
+            LaunchConfiguration('x_pose'),
+            LaunchConfiguration('y_pose'),
+            LaunchConfiguration('yaw'),
+            LaunchConfiguration('auto_localize'),
         ]),
     ])
