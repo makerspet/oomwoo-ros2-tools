@@ -14,8 +14,10 @@
 """
 Reactive bump-out wall cleaning behavior (the pre-sensor edge clean).
 
-Runs the wall_clean node -- no Nav2, no map, just bumpers -> /cmd_vel. Position
-the robot at a wall with teleop first, then start this. Every motion value is
+Runs the wall_clean node -- no Nav2, no map, just bumpers -> /cmd_vel. It also
+starts bump_map.launch.py by default (pass bump_map:=false to skip) so the
+tactile keep-out map builds while you clean. Position the robot at a wall with
+teleop first, then start this. Every motion value is
 read from `kaia set clean.<name>` for the active robot (a launch arg still wins,
 e.g. v_cruise:=0.2), so you can tune it live and relaunch:
 
@@ -27,8 +29,13 @@ under its own name; wall_clean.launch.py is reserved for the fully-featured
 (sensor-based) wall cleaning and currently forwards here.
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import Node
@@ -58,7 +65,13 @@ def _cfg(name, default):
 
 
 def generate_launch_description() -> LaunchDescription:
-    args = [DeclareLaunchArgument('use_sim_time', default_value='true')]
+    args = [
+        DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument(
+            'bump_map', default_value='true',
+            description='Also start bump_map.launch.py to build the tactile '
+                        'keep-out map while bump-out cleaning'),
+    ]
     params = {'use_sim_time': ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool)}
     for name, default in CLEAN_PARAMS.items():
@@ -74,4 +87,13 @@ def generate_launch_description() -> LaunchDescription:
                     ('bumper_left/contact', '/bumper_left/contact'),
                     ('bumper_right/contact', '/bumper_right/contact'),
                     ('cleaning_active', '/coverage_planner/cleaning_active')])
-    return LaunchDescription(args + [node])
+
+    bump_map_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('oomwoo_clean'),
+            'launch', 'bump_map.launch.py')),
+        condition=IfCondition(LaunchConfiguration('bump_map')),
+        launch_arguments={
+            'use_sim_time': LaunchConfiguration('use_sim_time')}.items())
+
+    return LaunchDescription(args + [bump_map_launch, node])
