@@ -31,22 +31,27 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
-               slam, x_pose, y_pose, yaw, auto_localize):
+               slam, x_pose, y_pose, yaw, auto_localize, rviz_config):
     robot_model_str = context.perform_substitution(robot_model)
     map_path_str = context.perform_substitution(map_arg)
     use_sim_time_str = context.perform_substitution(use_sim_time)
     slam_str = context.perform_substitution(slam)
     auto_str = context.perform_substitution(auto_localize)
+    rviz_config_str = context.perform_substitution(rviz_config)
 
     if len(robot_model_str) == 0:
         robot_model_str = config.get_var('robot.model')
 
     description_package_path = get_package_share_path(robot_model_str)
 
-    rviz_config_path = os.path.join(
-        description_package_path,
-        'rviz',
-        'navigation.rviz')
+    # rviz_config is either an absolute path or a file name in the robot package
+    # rviz/ folder (e.g. bump_map.rviz to also show the tactile bump map, so one
+    # RViz window covers navigation + bump mapping).
+    if os.path.isabs(rviz_config_str):
+        rviz_config_path = rviz_config_str
+    else:
+        rviz_config_path = os.path.join(
+            description_package_path, 'rviz', rviz_config_str)
 
     nav_config_path = os.path.join(
         description_package_path,
@@ -143,6 +148,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'yaw', default_value='0.0',
             description='Known start yaw for auto_localize (rad)'),
+        DeclareLaunchArgument(
+            'rviz_config', default_value='navigation.rviz',
+            description='RViz config: a file name in the robot package rviz/ '
+                        'folder (e.g. bump_map.rviz) or an absolute path'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('robot_model'),
             LaunchConfiguration('map'),
@@ -152,5 +161,6 @@ def generate_launch_description():
             LaunchConfiguration('y_pose'),
             LaunchConfiguration('yaw'),
             LaunchConfiguration('auto_localize'),
+            LaunchConfiguration('rviz_config'),
         ]),
     ])
