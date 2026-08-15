@@ -58,6 +58,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('target_frame', default_value='map'),
         DeclareLaunchArgument('odom_frame', default_value='odom'),
         DeclareLaunchArgument('base_frame', default_value='base_footprint'),
+        DeclareLaunchArgument('frame_grace_sec', default_value='8.0'),
         DeclareLaunchArgument(
             'occupied_min_hits',
             default_value=str(_cfg('bump_map.occupied_min_hits', 1))),
@@ -68,6 +69,8 @@ def generate_launch_description() -> LaunchDescription:
         'target_frame': LaunchConfiguration('target_frame'),
         'odom_frame': LaunchConfiguration('odom_frame'),
         'base_frame': LaunchConfiguration('base_frame'),
+        'frame_grace_sec': ParameterValue(
+            LaunchConfiguration('frame_grace_sec'), value_type=float),
         'occupied_min_hits': ParameterValue(
             LaunchConfiguration('occupied_min_hits'), value_type=int),
     }

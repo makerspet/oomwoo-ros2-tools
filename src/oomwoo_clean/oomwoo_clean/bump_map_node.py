@@ -22,7 +22,8 @@ tactile layer -- the real keep-out map -- from the bumpers alone.
 
 The real bumper is TWO switches (left half, right half of the front arc), so a
 bump gives left/right/both -- not an exact angle. On each fresh bump this node:
-  * looks up the robot pose in `map` (falling back to `odom` if not localized);
+  * looks up the robot pose in `map`, waiting briefly for localization and
+    falling back to `odom` only if no `map` ever appears (pure-bumper mode);
   * places the contact along the APPROACH direction (a diff-drive moves along
     its heading, taken from a short pose history) at contact_radius, biased
     toward the side that fired -- more principled than a fixed per-half angle;
@@ -110,6 +111,7 @@ class BumpMap(Node):
         self.fresh = Duration(seconds=fresh)
         hz = self.declare_parameter('control_hz', 20.0).value
         pub_hz = self.declare_parameter('publish_hz', 2.0).value
+        self.frame_grace = self.declare_parameter('frame_grace_sec', 8.0).value
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -130,6 +132,7 @@ class BumpMap(Node):
         self._last_side = None
         self._hist = deque()         # (stamp, x, y, yaw) in self.frame
         self.frame = None            # locked target frame (map or odom)
+        self._frame_wait_start = None  # when we began waiting for the target
         self.cells = {}              # (ix, iy) -> hit count
         self.runs = []               # wall polylines [[(x, y), ...], ...]
         self.pts = []                # contact points [(x, y, side), ...]
@@ -170,14 +173,31 @@ class BumpMap(Node):
         return stamp is not None and (now - stamp) < self.fresh
 
     def _resolve_frame(self):
-        # Lock to map if its transform is available, else odom.
+        # Prefer the target frame (map) so contacts freeze in MAP coords and
+        # do not ride a drifting map->odom. Wait for it before locking; only
+        # fall back to odom if the target never appears within the grace
+        # window (the pure-bumper, no-localization mode has no map at all).
         if self.frame is not None:
             return self.frame
-        for f in (self.target_frame, self.odom_frame):
-            if self.tf_buffer.can_transform(f, self.base_frame, Time()):
-                self.frame = f
-                self.get_logger().info('bump_map: mapping in frame [%s]' % f)
-                return f
+        now = self.get_clock().now()
+        if self._frame_wait_start is None:
+            self._frame_wait_start = now
+        if self.tf_buffer.can_transform(
+                self.target_frame, self.base_frame, Time()):
+            self.frame = self.target_frame
+            self.get_logger().info(
+                'bump_map: mapping in frame [%s]' % self.frame)
+            return self.frame
+        waited = (now - self._frame_wait_start) >= Duration(
+            seconds=self.frame_grace)
+        if waited and self.tf_buffer.can_transform(
+                self.odom_frame, self.base_frame, Time()):
+            self.frame = self.odom_frame
+            self.get_logger().warn(
+                'bump_map: no [%s] transform after %.0fs -- falling back to '
+                '[%s]; artifacts will drift if localization moves'
+                % (self.target_frame, self.frame_grace, self.odom_frame))
+            return self.frame
         return None
 
     def _lookup(self, frame):
