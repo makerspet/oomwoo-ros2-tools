@@ -22,8 +22,8 @@ tactile layer -- the real keep-out map -- from the bumpers alone.
 
 The real bumper is TWO switches (left half, right half of the front arc), so a
 bump gives left/right/both -- not an exact angle. On each fresh bump this node:
-  * looks up the robot pose in `map`, waiting briefly for localization and
-    falling back to `odom` only if no `map` ever appears (pure-bumper mode);
+  * looks up the robot pose in `map`, or `odom` until localization comes up and
+    then promotes to `map`, rebasing what it captured (pure-bumper stays odom);
   * places the contact along the APPROACH direction (a diff-drive moves along
     its heading, taken from a short pose history) at contact_radius, biased
     toward the side that fired -- more principled than a fixed per-half angle;
@@ -111,7 +111,6 @@ class BumpMap(Node):
         self.fresh = Duration(seconds=fresh)
         hz = self.declare_parameter('control_hz', 20.0).value
         pub_hz = self.declare_parameter('publish_hz', 2.0).value
-        self.frame_grace = self.declare_parameter('frame_grace_sec', 8.0).value
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -132,7 +131,6 @@ class BumpMap(Node):
         self._last_side = None
         self._hist = deque()         # (stamp, x, y, yaw) in self.frame
         self.frame = None            # locked target frame (map or odom)
-        self._frame_wait_start = None  # when we began waiting for the target
         self.cells = {}              # (ix, iy) -> hit count
         self.runs = []               # wall polylines [[(x, y), ...], ...]
         self.pts = []                # contact points [(x, y, side), ...]
@@ -173,32 +171,55 @@ class BumpMap(Node):
         return stamp is not None and (now - stamp) < self.fresh
 
     def _resolve_frame(self):
-        # Prefer the target frame (map) so contacts freeze in MAP coords and
-        # do not ride a drifting map->odom. Wait for it before locking; only
-        # fall back to odom if the target never appears within the grace
-        # window (the pure-bumper, no-localization mode has no map at all).
+        # Lock to map if localization is already up, else odom so the
+        # pure-bumper (no-map) mode works right away. If we start on odom and
+        # the map appears later, _maybe_upgrade() promotes us and rebases what
+        # we captured -- so no fixed timeout is needed.
         if self.frame is not None:
             return self.frame
-        now = self.get_clock().now()
-        if self._frame_wait_start is None:
-            self._frame_wait_start = now
-        if self.tf_buffer.can_transform(
-                self.target_frame, self.base_frame, Time()):
-            self.frame = self.target_frame
-            self.get_logger().info(
-                'bump_map: mapping in frame [%s]' % self.frame)
-            return self.frame
-        waited = (now - self._frame_wait_start) >= Duration(
-            seconds=self.frame_grace)
-        if waited and self.tf_buffer.can_transform(
-                self.odom_frame, self.base_frame, Time()):
-            self.frame = self.odom_frame
-            self.get_logger().warn(
-                'bump_map: no [%s] transform after %.0fs -- falling back to '
-                '[%s]; artifacts will drift if localization moves'
-                % (self.target_frame, self.frame_grace, self.odom_frame))
-            return self.frame
+        for f in (self.target_frame, self.odom_frame):
+            if self.tf_buffer.can_transform(f, self.base_frame, Time()):
+                self.frame = f
+                self.get_logger().info('bump_map: mapping in frame [%s]' % f)
+                return f
         return None
+
+    def _maybe_upgrade(self) -> None:
+        # Promote odom -> map the instant localization comes up, rebasing every
+        # contact captured so far into map so the artifacts stop riding a
+        # drifting map->odom. No timeout: we switch when the map TF appears
+        # (in practice before you drive -- you wait for the map to load).
+        if self.frame != self.odom_frame:
+            return
+        if self.odom_frame == self.target_frame:
+            return
+        if not self.tf_buffer.can_transform(
+                self.target_frame, self.base_frame, Time()):
+            return
+        try:
+            tr = self.tf_buffer.lookup_transform(
+                self.target_frame, self.odom_frame, Time())
+        except TransformException:
+            return
+        tx = tr.transform.translation.x
+        ty = tr.transform.translation.y
+        yaw = yaw_from_quat(tr.transform.rotation)
+        c, s = math.cos(yaw), math.sin(yaw)
+
+        def xf(x, y):
+            return (tx + c * x - s * y, ty + s * x + c * y)
+        self.pts = [(*xf(x, y), side) for (x, y, side) in self.pts]
+        self.runs = [[xf(x, y) for (x, y) in run] for run in self.runs]
+        self.cells = {}
+        for (x, y, _side) in self.pts:
+            key = (int(math.floor(x / self.res)),
+                   int(math.floor(y / self.res)))
+            self.cells[key] = self.cells.get(key, 0) + 1
+        self._hist.clear()
+        self.frame = self.target_frame
+        self.get_logger().info(
+            'bump_map: localization up -- rebased %d contacts into [%s]'
+            % (len(self.pts), self.frame))
 
     def _lookup(self, frame):
         try:
@@ -214,6 +235,7 @@ class BumpMap(Node):
     def _tick(self) -> None:
         now = self.get_clock().now()
         self._sample_pose(now)     # keep the approach history, lock frame early
+        self._maybe_upgrade()      # promote odom -> map once localization is up
         left = self._pressed(self._left_t, now)
         right = self._pressed(self._right_t, now)
         if not (left or right):
