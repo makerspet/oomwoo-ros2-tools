@@ -21,6 +21,11 @@ misregistration. It is localizer-agnostic: it reads the estimate from the TF
 map->base_footprint (published by AMCL, or by slam_toolbox in localization
 mode), so the same meter scores either one and makes an honest A/B possible.
 
+Set estimate_topic to read the estimate from a PoseWithCovarianceStamped topic
+(e.g. /amcl_pose) instead of the TF. That lets a second instance measure a
+localizer that is NOT the one owning map->odom -- so AMCL (via /amcl_pose, with
+tf_broadcast:false) and slam_toolbox (via TF) can be scored side by side.
+
 Truth comes from oomwoo_sim_support/ground_truth (`/ground_truth/pose`), which
 is only real ground truth when `/odom` is the sim's noise-free odometry -- so
 run this with odom_source:=truth. With wheel odom, `/odom` drifts and the
@@ -39,7 +44,7 @@ can rqt_plot or echo them:
 from collections import deque
 import math
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 
 import rclpy
 from rclpy.duration import Duration
@@ -75,10 +80,12 @@ class LocalizationError(Node):
         rate = self.declare_parameter('rate', 5.0).value
         self.window = self.declare_parameter('window_s', 20.0).value
         self.log_period = self.declare_parameter('log_period_s', 2.0).value
+        self.est_topic = self.declare_parameter('estimate_topic', '').value
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.truth = None            # (x, y, yaw) in map
+        self.est = None              # (x, y, yaw) from estimate_topic, if used
         self._samples = deque()      # (stamp, pos_err_m, yaw_err_deg)
         self._last_log = self.get_clock().now()
 
@@ -86,18 +93,28 @@ class LocalizationError(Node):
         self.yaw_pub = self.create_publisher(Float32, '~/yaw_err_deg', 10)
         self.create_subscription(
             PoseStamped, self.truth_topic, self._on_truth, 10)
+        if self.est_topic:
+            self.create_subscription(
+                PoseWithCovarianceStamped, self.est_topic, self._on_est, 10)
         self.create_timer(1.0 / max(rate, 1e-3), self._tick)
+        source = self.est_topic if self.est_topic else '%s->%s TF' % (
+            self.target_frame, self.base_frame)
         self.get_logger().info(
-            'localization_error: [%s]->[%s] vs %s (needs odom_source:=truth)'
-            % (self.target_frame, self.base_frame, self.truth_topic))
+            'localization_error: estimate=[%s] vs %s (needs odom_source:=truth)'
+            % (source, self.truth_topic))
 
     def _on_truth(self, msg: PoseStamped) -> None:
         self.truth = (msg.pose.position.x, msg.pose.position.y,
                       yaw_from_quat(msg.pose.orientation))
 
-    def _tick(self) -> None:
-        if self.truth is None:
-            return
+    def _on_est(self, msg: PoseWithCovarianceStamped) -> None:
+        p = msg.pose.pose
+        self.est = (p.position.x, p.position.y, yaw_from_quat(p.orientation))
+
+    def _estimate(self):
+        # localizer estimate: from the pose topic if configured, else the TF
+        if self.est_topic:
+            return self.est
         try:
             tr = self.tf_buffer.lookup_transform(
                 self.target_frame, self.base_frame, Time())
@@ -105,10 +122,17 @@ class LocalizationError(Node):
             self.get_logger().warn(
                 'localization_error: TF lookup failed: %s' % err,
                 throttle_duration_sec=5.0)
+            return None
+        return (tr.transform.translation.x, tr.transform.translation.y,
+                yaw_from_quat(tr.transform.rotation))
+
+    def _tick(self) -> None:
+        if self.truth is None:
             return
-        ex = tr.transform.translation.x
-        ey = tr.transform.translation.y
-        eyaw = yaw_from_quat(tr.transform.rotation)
+        est = self._estimate()
+        if est is None:
+            return
+        ex, ey, eyaw = est
         tx, ty, tyaw = self.truth
         pos_err = math.hypot(ex - tx, ey - ty)
         yaw_err = math.degrees(abs(wrap(eyaw - tyaw)))
