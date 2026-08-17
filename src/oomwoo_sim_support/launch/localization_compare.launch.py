@@ -124,15 +124,22 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         name='loc_err_slam', output='screen',
         parameters=[common, {'target_frame': 'map'}])
 
-    # Delay the nav2 lifecycle bringup so map_server/amcl are up and
-    # slam_toolbox's one-shot pose-graph + Ceres load (a brief thread storm) is
-    # done first -- otherwise configuring map_server can lose the startup race
-    # and the whole AMCL side aborts (a retry usually "fixes" it; this makes it
-    # deterministic). map_server/amcl just wait unconfigured until then.
-    lifecycle_delayed = TimerAction(period=delay, actions=[lifecycle])
-    nodes = [map_server, amcl, lifecycle_delayed, seed, slam]
+    # Bring up nav2 (map_server + amcl) only AFTER slam_toolbox reaches its
+    # active state -- i.e. once its one-shot pose-graph deserialize + Ceres load
+    # is finished. That load is a ~50-thread burst; if it overlaps map_server's
+    # configure it starves the service call and the whole AMCL side aborts.
+    # Waiting on the state TRANSITION (not a fixed delay) self-paces to any PC,
+    # fast or slow; bringup_delay only adds a small cushion past the first
+    # localize burst. map_server/amcl sit unconfigured until then.
     if auto:
-        nodes += [slam_configure, slam_activate]
+        start_nav2 = RegisterEventHandler(OnStateTransition(
+            target_lifecycle_node=slam, goal_state='active',
+            entities=[TimerAction(period=delay, actions=[lifecycle])]))
+        nodes = [map_server, amcl, seed, slam, slam_configure, slam_activate,
+                 start_nav2]
+    else:
+        # manual lifecycle mode: bring nav2 up immediately; user drives slam
+        nodes = [map_server, amcl, lifecycle, seed, slam]
     nodes += [truth, meter_amcl, meter_slam]
     return nodes
 
@@ -155,9 +162,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('yaw', default_value='0.0'),
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
-            'bringup_delay', default_value='6.0',
-            description='Seconds to delay the nav2 lifecycle bringup so it '
-                        'does not race slam_toolbox startup'),
+            'bringup_delay', default_value='2.0',
+            description='Extra seconds after slam_toolbox reaches active '
+                        'before starting the nav2 (AMCL) lifecycle bringup'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('use_sim_time'),
             LaunchConfiguration('map'),
