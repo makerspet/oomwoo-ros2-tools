@@ -15,9 +15,15 @@
 """
 Publish the robot's ground-truth pose for honest metric evaluation.
 
-The sim's ``gz-sim-odometry-publisher`` produces *noise-free* odometry, so
-``/odom`` is effectively ground truth — but odometry does NOT jump when the robot
-is teleported ("kidnapped"). To stay correct through kidnaps, this node tracks a
+The sim's ``gz-sim-odometry-publisher`` produces *noise-free* odometry. With
+``odom_source:=truth`` that is ``/odom``; with ``odom_source:=wheel`` ``/odom``
+becomes drifting wheel odometry and the noise-free pose moves to ``/odom_truth``.
+This node therefore PREFERS ``/odom_truth`` when present and only falls back to
+``/odom`` -- otherwise, in wheel mode, "truth" would drift with the wheels and
+every localizer would look like it is diverging by the wheel-odom drift.
+
+Odometry does NOT jump when the robot is teleported ("kidnapped"). To stay
+correct through kidnaps, this node tracks a
 rigid SE(2) offset between the odom frame and the true map frame:
 
     true(t) = T_offset ∘ odom(t)
@@ -27,7 +33,8 @@ the kidnap injector announces a teleport on ``~/target_pose``, the offset is
 recomputed from the odom sampled right after the jump, so the true pose is
 correct both at the teleport point and while the robot drives during recovery.
 
-  sub  /odom                         nav_msgs/Odometry
+  sub  /odom                         nav_msgs/Odometry   (truth in truth mode)
+  sub  /odom_truth                   nav_msgs/Odometry   (truth in wheel mode)
   sub  /kidnap_injector/target_pose  geometry_msgs/PoseStamped   (optional)
   pub  ~/pose                        geometry_msgs/PoseStamped   (map frame)
 """
@@ -80,10 +87,13 @@ class GroundTruth(Node):
         self.offset = None
         self.spawn = spawn
         self.pending_teleport = None   # (x,y,yaw) to apply on the next odom
+        self._truth_seen = False       # /odom_truth present -> wheel-odom mode
 
         self.pose_pub = self.create_publisher(PoseStamped, '~/pose', 10)
         self.yaw_pub = self.create_publisher(Float32, '~/yaw', 10)
         self.create_subscription(Odometry, 'odom', self._on_odom, 20)
+        self.create_subscription(
+            Odometry, '/odom_truth', self._on_truth_odom, 20)
         self.create_subscription(
             PoseStamped, '/kidnap_injector/target_pose', self._on_teleport, 10)
         self.get_logger().info('ground_truth up (teleport-aware odom truth)')
@@ -93,7 +103,23 @@ class GroundTruth(Node):
         self.pending_teleport = (msg.pose.position.x, msg.pose.position.y,
                                  _yaw(q.x, q.y, q.z, q.w))
 
+    def _on_truth_odom(self, msg: Odometry):
+        # /odom_truth is published only with odom_source:=wheel, and it carries
+        # the noise-free pose (while /odom is then drifting wheel odom). Prefer
+        # it so "truth" does not drift with the wheels.
+        if not self._truth_seen:
+            self._truth_seen = True
+            self.offset = None   # re-seed from the authoritative truth topic
+            self.get_logger().info(
+                'ground_truth: using /odom_truth as truth (wheel-odom mode)')
+        self._update(msg)
+
     def _on_odom(self, msg: Odometry):
+        if self._truth_seen:
+            return   # in wheel mode /odom is wheel odom; /odom_truth is truth
+        self._update(msg)
+
+    def _update(self, msg: Odometry):
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
         odom = (p.x, p.y, _yaw(q.x, q.y, q.z, q.w))
