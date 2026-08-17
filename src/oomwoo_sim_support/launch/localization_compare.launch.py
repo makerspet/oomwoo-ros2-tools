@@ -42,7 +42,8 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler)
+    DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler,
+    TimerAction)
 from launch.events import matches_action
 from launch.substitutions import LaunchConfiguration
 
@@ -54,7 +55,7 @@ from lifecycle_msgs.msg import Transition
 
 
 def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
-               nav_params, x_pose, y_pose, yaw, autostart):
+               nav_params, x_pose, y_pose, yaw, autostart, bringup_delay):
     sim = context.perform_substitution(use_sim_time).lower() == 'true'
     map_str = context.perform_substitution(map_yaml)
     serial_str = context.perform_substitution(serial_map)
@@ -63,6 +64,7 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     y = float(context.perform_substitution(y_pose))
     th = float(context.perform_substitution(yaw))
     auto = context.perform_substitution(autostart).lower() == 'true'
+    delay = float(context.perform_substitution(bringup_delay))
 
     if not serial_str:
         serial_str = os.path.splitext(map_str)[0] + '_serial'
@@ -122,7 +124,13 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         name='loc_err_slam', output='screen',
         parameters=[common, {'target_frame': 'map'}])
 
-    nodes = [map_server, amcl, lifecycle, seed, slam]
+    # Delay the nav2 lifecycle bringup so map_server/amcl are up and
+    # slam_toolbox's one-shot pose-graph + Ceres load (a brief thread storm) is
+    # done first -- otherwise configuring map_server can lose the startup race
+    # and the whole AMCL side aborts (a retry usually "fixes" it; this makes it
+    # deterministic). map_server/amcl just wait unconfigured until then.
+    lifecycle_delayed = TimerAction(period=delay, actions=[lifecycle])
+    nodes = [map_server, amcl, lifecycle_delayed, seed, slam]
     if auto:
         nodes += [slam_configure, slam_activate]
     nodes += [truth, meter_amcl, meter_slam]
@@ -146,6 +154,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('y_pose', default_value='-0.5'),
         DeclareLaunchArgument('yaw', default_value='0.0'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument(
+            'bringup_delay', default_value='6.0',
+            description='Seconds to delay the nav2 lifecycle bringup so it '
+                        'does not race slam_toolbox startup'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('use_sim_time'),
             LaunchConfiguration('map'),
@@ -155,5 +167,6 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration('y_pose'),
             LaunchConfiguration('yaw'),
             LaunchConfiguration('autostart'),
+            LaunchConfiguration('bringup_delay'),
         ]),
     ])
