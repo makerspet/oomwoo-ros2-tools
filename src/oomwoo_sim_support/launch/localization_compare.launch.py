@@ -21,16 +21,18 @@ Two localization_error meters then score both against ground truth:
   slam_toolbox : /loc_err_slam/pos_err_m  (read from the map->base TF)
   AMCL         : /loc_err_amcl/pos_err_m  (read from /amcl_pose)
 
-AMCL uses your unmodified navigation.yaml (only tf_broadcast is overridden).
-Both localizers share the same map origin only if living_room.yaml and
-living_room_serial.* were saved from the SAME mapping session.
+AMCL + its map_server come up through nav2's own localization_launch (the same,
+proven bringup navigation.launch.py uses), fed your unmodified navigation.yaml
+with only tf_broadcast rewritten to false. Both localizers share the same map
+origin only if living_room.yaml and living_room_serial.* were saved from the
+SAME mapping session.
 
 Run the sim with odom_source:=truth first (so /odom is real ground truth), then:
 
   ros2 launch oomwoo_sim_support localization_compare.launch.py \\
     use_sim_time:=true map:=/maps/living_room.yaml
   ros2 launch oomwoo_clean wall_clean_bump_out.launch.py use_sim_time:=true
-  rqt_plot /loc_err_amcl/pos_err_m/data /loc_err_slam/pos_err_m/data
+  # plot both /loc_err_amcl/pos_err_m and /loc_err_slam/pos_err_m
 
 serial_map defaults to the map path with .yaml replaced by _serial (the
 slam_toolbox pose-graph base, no extension).
@@ -42,9 +44,10 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler,
-    TimerAction)
+    DeclareLaunchArgument, EmitEvent, IncludeLaunchDescription, OpaqueFunction,
+    RegisterEventHandler, TimerAction)
 from launch.events import matches_action
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import LifecycleNode, Node
@@ -53,17 +56,20 @@ from launch_ros.events.lifecycle import ChangeState
 
 from lifecycle_msgs.msg import Transition
 
+from nav2_common.launch import RewrittenYaml
+
 
 def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
                nav_params, x_pose, y_pose, yaw, autostart, bringup_delay):
-    sim = context.perform_substitution(use_sim_time).lower() == 'true'
+    sim = context.perform_substitution(use_sim_time)
+    sim_bool = sim.lower() == 'true'
     map_str = context.perform_substitution(map_yaml)
     serial_str = context.perform_substitution(serial_map)
     nav_str = context.perform_substitution(nav_params)
     x = float(context.perform_substitution(x_pose))
     y = float(context.perform_substitution(y_pose))
     th = float(context.perform_substitution(yaw))
-    auto = context.perform_substitution(autostart).lower() == 'true'
+    auto = context.perform_substitution(autostart)
     delay = float(context.perform_substitution(bringup_delay))
 
     if not serial_str:
@@ -71,26 +77,45 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     slam_params = os.path.join(
         get_package_share_directory('oomwoo_sim_support'),
         'config', 'mapper_params_localization.yaml')
-    common = {'use_sim_time': sim}
+    common = {'use_sim_time': sim_bool}
 
-    # --- AMCL (no TF; only /amcl_pose) + its map, managed by nav2 lifecycle ---
-    map_server = Node(
-        package='nav2_map_server', executable='map_server', name='map_server',
-        output='screen', parameters=[common, {'yaml_filename': map_str}])
-    amcl = Node(
-        package='nav2_amcl', executable='amcl', name='amcl', output='screen',
-        parameters=[nav_str, common, {'tf_broadcast': False}])
-    lifecycle = Node(
-        package='nav2_lifecycle_manager', executable='lifecycle_manager',
-        name='lifecycle_manager_localization', output='screen',
-        parameters=[common, {'autostart': auto,
-                             'node_names': ['map_server', 'amcl']}])
+    # AMCL + map_server via nav2's own (proven) localization bringup. Rewrite
+    # ONLY tf_broadcast->false in the user's navigation.yaml so slam_toolbox can
+    # own map->odom; everything else stays exactly as configured. AMCL still
+    # publishes /amcl_pose, which the loc_err_amcl meter reads.
+    amcl_params = RewrittenYaml(
+        source_file=nav_str,
+        param_rewrites={'tf_broadcast': 'false'},
+        convert_types=True)
+    # This image disables FastDDS shared memory, so inter-process lifecycle
+    # service calls are slow enough that a separate-process map_server times out
+    # the lifecycle_manager (configure fails, whole AMCL side aborts). Compose
+    # the nav2 nodes into ONE container -- as navigation.launch.py does via
+    # bringup_launch use_composition:=True -- so the lifecycle calls are
+    # intra-process and instant.
+    container = Node(
+        package='rclcpp_components', executable='component_container_isolated',
+        name='nav2_container', output='screen', parameters=[common])
+    localization = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('nav2_bringup'),
+            'launch', 'localization_launch.py')),
+        launch_arguments={
+            'map': map_str,
+            'use_sim_time': sim,
+            'autostart': auto,
+            'params_file': amcl_params,
+            'use_composition': 'True',
+            'container_name': 'nav2_container'}.items())
+
+    # AMCL has set_initial_pose:false, so seed it at the known spawn pose.
     seed = Node(
         package='oomwoo_sim_support', executable='initialpose_pub',
         name='initialpose_pub', output='screen',
         parameters=[common, {'x': x, 'y': y, 'yaw': th}])
 
-    # --- slam_toolbox localization (canonical map->odom); own /map -> /map_slam
+    # slam_toolbox localization: owns the canonical map->odom TF. Its own /map
+    # is remapped to /map_slam so it does not collide with nav2's map_server.
     slam = LifecycleNode(
         package='slam_toolbox', executable='localization_slam_toolbox_node',
         name='slam_toolbox', namespace='', output='screen',
@@ -109,7 +134,6 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
             lifecycle_node_matcher=matches_action(slam),
             transition_id=Transition.TRANSITION_ACTIVATE))]))
 
-    # --- ground truth + the two error meters ---
     truth = Node(
         package='oomwoo_sim_support', executable='ground_truth',
         name='ground_truth', output='screen',
@@ -124,20 +148,15 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         name='loc_err_slam', output='screen',
         parameters=[common, {'target_frame': 'map'}])
 
-    # Order matters. Bring up nav2 (map_server + amcl) FIRST, at t=0, while
-    # slam_toolbox is NOT yet running -- so their one-time lifecycle bringup has
-    # zero contention and configures reliably (a tiny map + AMCL: fast and
-    # predictable on any machine). Start slam_toolbox bringup_delay seconds
-    # later: by then nav2 is fully active with no lifecycle transitions left, so
-    # slam's heavy pose-graph load AND its perpetual ~24-thread Ceres bursts
-    # (every ~1 s, forever) only cost a little runtime -- they can no longer
-    # starve a configure and abort the AMCL side. The delay gates nav2's FAST
-    # bringup, not slam's variable load, so it stays robust on slow PCs.
-    slam_actions = [slam, slam_configure, slam_activate] if auto else [slam]
+    # nav2 comes up first via its reliable bringup; start slam_toolbox a few
+    # seconds later so it never competes with that bringup. The delay gates
+    # nav2's fast bringup, not slam's variable pose-graph load.
+    slam_actions = ([slam, slam_configure, slam_activate]
+                    if auto.lower() == 'true' else [slam])
     slam_delayed = TimerAction(period=delay, actions=slam_actions)
-    nodes = [map_server, amcl, lifecycle, seed, slam_delayed,
-             truth, meter_amcl, meter_slam]
-    return nodes
+
+    return [container, localization, seed, slam_delayed,
+            truth, meter_amcl, meter_slam]
 
 
 def generate_launch_description() -> LaunchDescription:
