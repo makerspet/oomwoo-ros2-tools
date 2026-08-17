@@ -60,7 +60,8 @@ from nav2_common.launch import RewrittenYaml
 
 
 def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
-               nav_params, x_pose, y_pose, yaw, autostart, bringup_delay):
+               nav_params, x_pose, y_pose, yaw, autostart, bringup_delay,
+               rviz, rviz_config):
     sim = context.perform_substitution(use_sim_time)
     sim_bool = sim.lower() == 'true'
     map_str = context.perform_substitution(map_yaml)
@@ -71,6 +72,8 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     th = float(context.perform_substitution(yaw))
     auto = context.perform_substitution(autostart)
     delay = float(context.perform_substitution(bringup_delay))
+    rviz_on = context.perform_substitution(rviz).lower() == 'true'
+    rviz_cfg = context.perform_substitution(rviz_config)
 
     if not serial_str:
         serial_str = os.path.splitext(map_str)[0] + '_serial'
@@ -155,8 +158,19 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
                     if auto.lower() == 'true' else [slam])
     slam_delayed = TimerAction(period=delay, actions=slam_actions)
 
-    return [container, localization, seed, slam_delayed,
-            truth, meter_amcl, meter_slam]
+    # RViz here, so you DON'T also run navigation.launch.py -- that would start a
+    # SECOND map_server/amcl/lifecycle_manager stack in another nav2_container
+    # and collide with this one (duplicate node names -> configure fails).
+    nodes = [container, localization, seed, slam_delayed,
+             truth, meter_amcl, meter_slam]
+    if rviz_on:
+        if not os.path.isabs(rviz_cfg):
+            rviz_cfg = os.path.join(
+                get_package_share_directory('oomwoo_one'), 'rviz', rviz_cfg)
+        nodes.append(Node(
+            package='rviz2', executable='rviz2', name='rviz2', output='screen',
+            arguments=['-d', rviz_cfg], parameters=[common]))
+    return nodes
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -180,6 +194,11 @@ def generate_launch_description() -> LaunchDescription:
             'bringup_delay', default_value='6.0',
             description='Seconds after launch to start slam_toolbox; nav2 '
                         '(map_server+amcl) comes up first in this window'),
+        DeclareLaunchArgument(
+            'rviz', default_value='true',
+            description='Launch RViz here (do NOT also run navigation.launch.py '
+                        '-- it starts a second, colliding nav2 stack)'),
+        DeclareLaunchArgument('rviz_config', default_value='bump_map.rviz'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('use_sim_time'),
             LaunchConfiguration('map'),
@@ -190,5 +209,7 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration('yaw'),
             LaunchConfiguration('autostart'),
             LaunchConfiguration('bringup_delay'),
+            LaunchConfiguration('rviz'),
+            LaunchConfiguration('rviz_config'),
         ]),
     ])
