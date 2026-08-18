@@ -16,7 +16,7 @@
 Publish the robot's ground-truth pose for honest metric evaluation.
 
 The sim's ``gz-sim-odometry-publisher`` produces *noise-free* odometry. With
-``odom_source:=truth`` that is ``/odom``; with ``odom_source:=wheel`` ``/odom``
+``odom_source:=ground_truth`` that is ``/odom``; with ``robot_wheels`` ``/odom``
 becomes drifting wheel odometry and the noise-free pose moves to ``/odom_truth``.
 This node therefore PREFERS ``/odom_truth`` when present and only falls back to
 ``/odom`` -- otherwise, in wheel mode, "truth" would drift with the wheels and
@@ -104,7 +104,7 @@ class GroundTruth(Node):
                                  _yaw(q.x, q.y, q.z, q.w))
 
     def _on_truth_odom(self, msg: Odometry):
-        # /odom_truth is published only with odom_source:=wheel, and it carries
+        # /odom_truth is published only with odom_source:=robot_wheels; it carries
         # the noise-free pose (while /odom is then drifting wheel odom). Prefer
         # it so "truth" does not drift with the wheels.
         if not self._truth_seen:

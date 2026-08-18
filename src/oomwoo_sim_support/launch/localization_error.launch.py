@@ -16,7 +16,7 @@ Localization-error measurement: ground_truth + localization_error together.
 
 Scores the running localizer (AMCL, or slam_toolbox localization) against the
 sim's ground truth while you drive, for an honest before/after A/B. Run it with
-odom_source:=truth so `/odom` is real ground truth; x_pose/y_pose/yaw must match
+odom_source:=ground_truth so `/odom` is truth; x_pose/y_pose/yaw must match
 the robot's spawn pose in world.launch.py (defaults match navigation.launch.py).
 """
 

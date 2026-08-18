@@ -28,7 +28,7 @@ tf_broadcast:false) and slam_toolbox (via TF) can be scored side by side.
 
 Truth comes from oomwoo_sim_support/ground_truth (`/ground_truth/pose`), which
 is only real ground truth when `/odom` is the sim's noise-free odometry -- so
-run this with odom_source:=truth. With wheel odom, `/odom` drifts and the
+run this with odom_source:=ground_truth. With robot_wheels, `/odom` drifts and
 comparison conflates odom drift with localizer error.
 
 Each tick it logs a machine-parseable line and publishes the two errors so you
@@ -100,7 +100,7 @@ class LocalizationError(Node):
         source = self.est_topic if self.est_topic else '%s->%s TF' % (
             self.target_frame, self.base_frame)
         self.get_logger().info(
-            'localization_error: estimate=[%s] vs %s (needs odom_source:=truth)'
+            'localization_error: estimate=[%s] vs %s (needs ground_truth odom)'
             % (source, self.truth_topic))
 
     def _on_truth(self, msg: PoseStamped) -> None:

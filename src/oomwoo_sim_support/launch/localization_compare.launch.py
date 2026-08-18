@@ -27,7 +27,7 @@ with only tf_broadcast rewritten to false. Both localizers share the same map
 origin only if living_room.yaml and living_room_serial.* were saved from the
 SAME mapping session.
 
-Run the sim with odom_source:=truth first (so /odom is real ground truth), then:
+Run the sim with odom_source:=ground_truth first (so /odom is truth), then:
 
   ros2 launch oomwoo_sim_support localization_compare.launch.py \\
     use_sim_time:=true map:=/maps/living_room.yaml
