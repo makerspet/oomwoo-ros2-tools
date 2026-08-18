@@ -16,8 +16,8 @@ ROS 2 bring-up and launch package for the [OOMWOO](https://github.com/makerspet/
 open-source robot vacuum.
 
 A fork of [kaiaai/kaiaai_bringup](https://github.com/kaiaai/kaiaai_bringup) (jazzy),
-renamed to the **`oomwoo_bringup`** package, with `navigation.launch.py` pointing at
-[`oomwoo_gazebo`](https://github.com/makerspet/oomwoo_gazebo) for its default map.
+renamed to the **`oomwoo_bringup`** package. `navigation.launch.py` takes the map
+via `map:=` (no default), so the package does not depend on any sim package.
 
 ## Package contents
 - `launch/navigation.launch.py` — Nav2 + localization, or SLAM with `slam:=True`.

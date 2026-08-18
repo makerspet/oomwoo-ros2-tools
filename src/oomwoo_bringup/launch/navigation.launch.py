@@ -145,10 +145,14 @@ def make_nodes(context: LaunchContext, robot_model, map_arg, use_sim_time,
     # (<map>_serial.posegraph). Fall back to AMCL if it is missing, so a plain
     # pgm map still localizes.
     localizing = slam_str.strip().lower() in ('false', '0')
-    serial_base = os.path.splitext(map_path_str)[0] + '_serial'
-    graph_ok = os.path.exists(serial_base + '.posegraph')
+    if map_path_str:
+        serial_base = os.path.splitext(map_path_str)[0] + '_serial'
+    else:
+        serial_base = ''
+    graph_ok = bool(serial_base) and os.path.exists(serial_base + '.posegraph')
     use_slam = localizing and localization_str == 'slam_toolbox' and graph_ok
-    if localizing and localization_str == 'slam_toolbox' and not graph_ok:
+    if (localizing and localization_str == 'slam_toolbox'
+            and map_path_str and not graph_ok):
         print('navigation: no pose-graph at {}.posegraph -- '
               'falling back to AMCL'.format(serial_base))
 
@@ -209,11 +213,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'map',
-            default_value=os.path.join(
-                get_package_share_path('oomwoo_gazebo'),
-                'map',
-                'living_room.yaml'),
-            description='Full path to an existing map file'
+            default_value='',
+            description='Full path to a map yaml to localize against. Empty '
+                        'for slam:=True (mapping); pass a map to navigate one.'
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -235,7 +237,7 @@ def generate_launch_description():
                         'pose-graph; falls back to amcl if missing), or amcl.'
         ),
         # Auto-localization: seed AMCL at the known start pose to skip the manual
-        # RViz "2D Pose Estimate". Defaults match oomwoo_gazebo world.launch.py.
+        # RViz "2D Pose Estimate". Defaults match the living-room sim spawn.
         DeclareLaunchArgument(
             'auto_localize', default_value='sim',
             choices=['true', 'false', 'sim'],
