@@ -35,6 +35,12 @@
   <exec_depend>nav2_bringup</exec_depend>
   <!-- navigation.launch.py drives the slam_toolbox lifecycle by hand -->
   <exec_depend>lifecycle_msgs</exec_depend>
+  <!-- launched by name from navigation.launch.py's composed stack; not
+       Python imports, so check_rosdeps.py cannot infer them -->
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>oomwoo_sim_support</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
