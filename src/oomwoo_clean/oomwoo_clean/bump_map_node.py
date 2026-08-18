@@ -256,8 +256,10 @@ class BumpMap(Node):
         if pose is None:
             return
         self._hist.append((now, pose[0], pose[1], pose[2]))
-        cutoff = now - Duration(seconds=self.hist_secs)
-        while self._hist and self._hist[0][0] < cutoff:
+        # prune by AGE (now - sample >= 0); (now - hist_secs) would go negative
+        # -- and rclpy raises -- while sim time < hist_secs.
+        hist = Duration(seconds=self.hist_secs)
+        while self._hist and (now - self._hist[0][0]) > hist:
             self._hist.popleft()
 
     def _register(self, side, now) -> bool:
@@ -265,9 +267,9 @@ class BumpMap(Node):
             return False
         _, rx, ry, rth = self._hist[-1]              # robot pose at the bump
         ax, ay = rx, ry                              # approach pose (a bit ago)
-        cutoff = now - Duration(seconds=self.approach_dt)
+        approach = Duration(seconds=self.approach_dt)   # age, not (now - dt)
         for (t, hx, hy, _h) in self._hist:
-            if t >= cutoff:
+            if (now - t) <= approach:
                 ax, ay = hx, hy
                 break
         # approach direction: actual motion if we moved, else the heading

@@ -139,8 +139,10 @@ class LocalizationError(Node):
 
         now = self.get_clock().now()
         self._samples.append((now, pos_err, yaw_err))
-        cutoff = now - Duration(seconds=self.window)
-        while self._samples and self._samples[0][0] < cutoff:
+        # prune by AGE (now - sample >= 0) rather than (now - window), which
+        # goes negative -- and rclpy raises -- while sim time < window.
+        window = Duration(seconds=self.window)
+        while self._samples and (now - self._samples[0][0]) > window:
             self._samples.popleft()
         self.pos_pub.publish(Float32(data=float(pos_err)))
         self.yaw_pub.publish(Float32(data=float(yaw_err)))
