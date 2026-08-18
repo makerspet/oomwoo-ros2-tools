@@ -22,6 +22,10 @@ publishes ``/kidnap_trigger`` so the recovery node knows it was moved and
 ``~/target_pose`` (the new ground-truth pose) so the harness can score
 relocalization error.
 
+It also accepts ``~/kidnap_to`` (geometry_msgs/PoseStamped): teleport to a
+SPECIFIED pose instead of a random one (same trigger + target_pose behaviour),
+e.g. ``ros2 topic pub --once ~/kidnap_to ...``.
+
 Teleport happens in world coordinates; the living_room map frame is aligned with
 the world origin, so map xy == world xy (identity offset, configurable).
 """
@@ -89,7 +93,10 @@ class KidnapInjector(Node):
         self.trigger_pub = self.create_publisher(Empty, '/kidnap_trigger', 10)
         self.target_pub = self.create_publisher(PoseStamped, '~/target_pose', 10)
         self.srv = self.create_service(Trigger, '~/kidnap', self._on_kidnap)
-        self.get_logger().info('kidnap_injector up; ~/kidnap ready')
+        self.create_subscription(
+            PoseStamped, '~/kidnap_to', self._on_kidnap_to, 10)
+        self.get_logger().info(
+            'kidnap_injector up; ~/kidnap (random) + ~/kidnap_to (pose) ready')
 
     def _on_map(self, msg) -> None:
         if self.info is not None:
@@ -135,25 +142,37 @@ class KidnapInjector(Node):
             return resp
 
         yaw = self.rng.uniform(-math.pi, math.pi)
-        ok = self._teleport(target[0], target[1], yaw)
-        if not ok:
+        if not self._do_kidnap(target[0], target[1], yaw):
             resp.success = False
             resp.message = 'gz set_pose failed'
             return resp
+        resp.success = True
+        resp.message = f'kidnapped to ({target[0]:.2f},{target[1]:.2f},{yaw:.2f})'
+        return resp
 
+    def _on_kidnap_to(self, msg: PoseStamped) -> None:
+        # teleport to a SPECIFIED pose (ros2 topic pub ~/kidnap_to ...)
+        q = msg.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        if not self._do_kidnap(msg.pose.position.x, msg.pose.position.y, yaw):
+            self.get_logger().error('kidnap_to: gz set_pose failed')
+
+    def _do_kidnap(self, x: float, y: float, yaw: float) -> bool:
+        # teleport, then announce: target_pose for ground_truth, trigger for reco
+        if not self._teleport(x, y, yaw):
+            return False
         ps = PoseStamped()
         ps.header.stamp = self.get_clock().now().to_msg()
         ps.header.frame_id = 'map'
-        ps.pose.position.x = target[0]
-        ps.pose.position.y = target[1]
+        ps.pose.position.x = x
+        ps.pose.position.y = y
         ps.pose.orientation.z = math.sin(yaw / 2.0)
         ps.pose.orientation.w = math.cos(yaw / 2.0)
         self.target_pub.publish(ps)
         self.trigger_pub.publish(Empty())
-        resp.success = True
-        resp.message = f'kidnapped to ({target[0]:.2f},{target[1]:.2f},{yaw:.2f})'
-        self.get_logger().warn('KIDNAP ' + resp.message)
-        return resp
+        self.get_logger().warn('KIDNAP to (%.2f, %.2f, %.2f)' % (x, y, yaw))
+        return True
 
     def _teleport(self, x: float, y: float, yaw: float) -> bool:
         qz, qw = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
