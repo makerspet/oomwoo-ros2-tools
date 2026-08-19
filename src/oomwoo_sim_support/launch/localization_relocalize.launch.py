@@ -17,9 +17,15 @@ Relocalization scene: kidnap the robot, watch AMCL vs slam_toolbox recover.
 Brings up the localization_compare stack (both localizers, ground truth, two
 live error meters, RViz) plus kidnap_injector. Run the sim first, then this:
 
-  ros2 launch oomwoo_gazebo world.launch.py odom_source:=ground_truth
+  ros2 launch oomwoo_gazebo world.launch.py odom_source:=robot_wheels
   ros2 launch oomwoo_sim_support localization_relocalize.launch.py \\
     use_sim_time:=true map:=/ros_ws/src/oomwoo_gazebo/maps/living_room.yaml
+
+Use odom_source:=robot_wheels here, NOT ground_truth: a kidnap only fools a
+localizer whose ODOMETRY is unaware of the jump. With ground_truth odom the
+sim's odometry teleports with the robot, so slam_toolbox rides it and its error
+never moves; with robot_wheels the wheels do not turn during a teleport, so odom
+stays put and the localizer genuinely gets lost.
 
 Teleport the robot and watch both error plots spike:
 
