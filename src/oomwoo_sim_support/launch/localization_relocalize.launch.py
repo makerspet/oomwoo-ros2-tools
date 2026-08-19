@@ -70,10 +70,20 @@ def generate_launch_description() -> LaunchDescription:
                 os.path.join(pkg, 'launch', 'localization_compare.launch.py')),
             launch_arguments={
                 'use_sim_time': use_sim_time,
-                'map': LaunchConfiguration('map')}.items()),
+                'map': LaunchConfiguration('map'),
+                # AMCL scatters on a kidnap so its covariance rises for the
+                # auto-relocalizer to see it is lost.
+                'recovery': 'true'}.items()),
         Node(
             package='oomwoo_sim_support', executable='kidnap_injector',
             name='kidnap_injector', output='screen',
+            parameters=[{
+                'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}]),
+        # Auto recovery: detect lost -> reinitialize AMCL + spin -> re-seed
+        # slam_toolbox at the recovered pose (navigation back to normal).
+        Node(
+            package='oomwoo_sim_support', executable='relocalize_on_lost',
+            name='relocalize_on_lost', output='screen',
             parameters=[{
                 'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}]),
     ])

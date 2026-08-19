@@ -61,7 +61,7 @@ from nav2_common.launch import RewrittenYaml
 
 def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
                nav_params, x_pose, y_pose, yaw, autostart, bringup_delay,
-               rviz, rviz_config):
+               rviz, rviz_config, recovery):
     sim = context.perform_substitution(use_sim_time)
     sim_bool = sim.lower() == 'true'
     map_str = context.perform_substitution(map_yaml)
@@ -74,6 +74,7 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     delay = float(context.perform_substitution(bringup_delay))
     rviz_on = context.perform_substitution(rviz).lower() == 'true'
     rviz_cfg = context.perform_substitution(rviz_config)
+    recovery_on = context.perform_substitution(recovery).lower() == 'true'
 
     if not serial_str:
         serial_str = os.path.splitext(map_str)[0] + '_serial'
@@ -86,10 +87,14 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     # ONLY tf_broadcast->false in the user's navigation.yaml so slam_toolbox can
     # own map->odom; everything else stays exactly as configured. AMCL still
     # publishes /amcl_pose, which the loc_err_amcl meter reads.
+    amcl_rewrites = {'tf_broadcast': 'false'}
+    if recovery_on:
+        # let AMCL scatter particles when it loses track (kidnap recovery), so
+        # its covariance rises for relocalize_on_lost to see.
+        amcl_rewrites['recovery_alpha_slow'] = '0.001'
+        amcl_rewrites['recovery_alpha_fast'] = '0.1'
     amcl_params = RewrittenYaml(
-        source_file=nav_str,
-        param_rewrites={'tf_broadcast': 'false'},
-        convert_types=True)
+        source_file=nav_str, param_rewrites=amcl_rewrites, convert_types=True)
     # This image disables FastDDS shared memory, so inter-process lifecycle
     # service calls are slow enough that a separate-process map_server times out
     # the lifecycle_manager (configure fails, whole AMCL side aborts). Compose
@@ -199,6 +204,11 @@ def generate_launch_description() -> LaunchDescription:
             description='Launch RViz here (do NOT also run navigation.launch.py '
                         '-- it starts a second, colliding nav2 stack)'),
         DeclareLaunchArgument('rviz_config', default_value='bump_map.rviz'),
+        DeclareLaunchArgument(
+            'recovery', default_value='false',
+            description='Enable AMCL recovery_alpha (kidnap recovery) so its '
+                        'covariance rises when lost; relocalize_on_lost needs '
+                        'it'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('use_sim_time'),
             LaunchConfiguration('map'),
@@ -211,5 +221,6 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration('bringup_delay'),
             LaunchConfiguration('rviz'),
             LaunchConfiguration('rviz_config'),
+            LaunchConfiguration('recovery'),
         ]),
     ])
