@@ -35,13 +35,15 @@ Teleport the robot and watch both error plots spike:
   ros2 topic pub --once /kidnap_injector/kidnap_to geometry_msgs/msg/PoseStamped \\
     "{header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.5}}}"
 
-Then relocalize AMCL globally -- slam_toolbox has no global recovery, which is
-exactly why AMCL earns its keep:
+relocalize_on_lost then recovers automatically: reinitialize AMCL globally,
+spin to converge, and re-seed slam_toolbox at the recovered pose.
 
-  ros2 service call /reinitialize_global_localization std_srvs/srv/Empty {}
-
-loc_err_amcl should scatter its particles and re-converge to a few cm;
-loc_err_slam stays lost until it is driven back near where it thinks it is.
+recovery:=false (default) leaves AMCL's recovery_alpha at 0, so a global
+reinitialize converges cleanly (as in a manual kidnap test). recovery:=true
+turns on Augmented-MCL (recovery_alpha_slow/fast), which lets AMCL's covariance
+rise on its own so relocalize_on_lost can DETECT lost-ness passively -- but the
+continuous random-particle injection also fights a global reinit and can settle
+on a wrong cluster, so keep it off unless you are exercising passive detection.
 """
 
 import os
@@ -65,15 +67,19 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('map', default_value=default_map),
+        DeclareLaunchArgument(
+            'recovery', default_value='false',
+            description='Enable AMCL recovery_alpha (Augmented-MCL) so its '
+                        'covariance rises when lost, for passive detection. '
+                        'Off by default: the random-particle injection fights a '
+                        'global reinit and can converge to a wrong cluster'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg, 'launch', 'localization_compare.launch.py')),
             launch_arguments={
                 'use_sim_time': use_sim_time,
                 'map': LaunchConfiguration('map'),
-                # AMCL scatters on a kidnap so its covariance rises for the
-                # auto-relocalizer to see it is lost.
-                'recovery': 'true'}.items()),
+                'recovery': LaunchConfiguration('recovery')}.items()),
         Node(
             package='oomwoo_sim_support', executable='kidnap_injector',
             name='kidnap_injector', output='screen',
