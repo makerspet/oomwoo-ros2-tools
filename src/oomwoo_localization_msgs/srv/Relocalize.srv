@@ -1,0 +1,10 @@
+# Global relocalization of the latest laser scan against the loaded map.
+# The search is always global over the whole map; the request carries no prior.
+---
+bool success                                    # confident, accepted fix
+geometry_msgs/PoseWithCovarianceStamped pose    # best base-frame pose in map
+float32 score                                   # summed match score
+float32 score_normalized                        # score / n_beams, in [0, 1]
+float32 confidence                              # (top1 - top2) / top1, in [0, 1]
+float32 runtime_s                               # search wall-clock time
+string message                                  # human-readable summary

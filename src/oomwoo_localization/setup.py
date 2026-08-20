@@ -42,6 +42,9 @@ setup(
         'console_scripts': [
             'localization_health = '
             'oomwoo_localization.localization_health_node:main',
+            'global_relocalizer = '
+            'oomwoo_localization.global_relocalizer_node:main',
+            'reloc_eval = oomwoo_localization.reloc_eval_node:main',
         ],
     },
 )
