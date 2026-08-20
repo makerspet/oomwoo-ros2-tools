@@ -52,6 +52,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -73,6 +74,12 @@ def generate_launch_description() -> LaunchDescription:
                         'covariance rises when lost, for passive detection. '
                         'Off by default: the random-particle injection fights a '
                         'global reinit and can converge to a wrong cluster'),
+        DeclareLaunchArgument(
+            'auto_recovery', default_value='true',
+            description='Run relocalize_on_lost (AMCL reinit + spin + re-seed '
+                        'slam on a kidnap). Set false to test another '
+                        'relocalizer (e.g. global_relocalizer) without the '
+                        'robot auto-spinning'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg, 'launch', 'localization_compare.launch.py')),
@@ -87,9 +94,11 @@ def generate_launch_description() -> LaunchDescription:
                 'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}]),
         # Auto recovery: detect lost -> reinitialize AMCL + spin -> re-seed
         # slam_toolbox at the recovered pose (navigation back to normal).
+        # Gated so a global_relocalizer test isn't disturbed by the spin.
         Node(
             package='oomwoo_sim_support', executable='relocalize_on_lost',
             name='relocalize_on_lost', output='screen',
+            condition=IfCondition(LaunchConfiguration('auto_recovery')),
             parameters=[{
                 'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}]),
     ])

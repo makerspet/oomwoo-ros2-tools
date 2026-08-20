@@ -191,16 +191,22 @@ class KidnapInjector(Node):
 
 
 def _dilate(mask, radius):
+    # Euclidean disk, so clearance is uniform in every direction -- a diamond
+    # (4-connected) kernel leaves only ~0.7x the radius diagonally, which can
+    # drop a random kidnap onto an obstacle's corner.
     if radius <= 0:
         return mask.copy()
-    out = mask.copy()
-    for _ in range(radius):
-        s = out.copy()
-        s[1:, :] |= out[:-1, :]
-        s[:-1, :] |= out[1:, :]
-        s[:, 1:] |= out[:, :-1]
-        s[:, :-1] |= out[:, 1:]
-        out = s
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    for di in range(-radius, radius + 1):
+        for dj in range(-radius, radius + 1):
+            if di * di + dj * dj > radius * radius:
+                continue
+            gi0, gi1 = max(0, -di), min(h, h - di)
+            gj0, gj1 = max(0, -dj), min(w, w - dj)
+            if gi0 < gi1 and gj0 < gj1:
+                out[gi0:gi1, gj0:gj1] |= mask[gi0 + di:gi1 + di,
+                                              gj0 + dj:gj1 + dj]
     return out
 
 
