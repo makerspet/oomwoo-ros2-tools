@@ -112,7 +112,8 @@ def _cell_to_world(gi, gj, resolution, origin):
 
 
 def match_exhaustive(field, resolution, origin, scan_xy, thetas=None):
-    """Brute-force correlation over (x, y, theta); the reference oracle.
+    """
+    Brute-force correlation over (x, y, theta); the reference oracle.
 
     Return dict: pose, score, and runner_up (best score/pose in a different
     cluster, for a confidence margin).
@@ -147,7 +148,8 @@ def _runner_up(peaks, best, resolution, origin, exclude_m=0.5):
 
 
 def prepare(field, resolution, max_range, levels=4):
-    """Precompute the padded max-pool pyramid a map needs for match_bnb.
+    """
+    Precompute the padded max-pool pyramid a map needs for match_bnb.
 
     Zero-pad so every beam's window is in-array at every base cell -- otherwise
     an off-grid beam gets dropped and the max-pool stops being an upper bound
@@ -160,7 +162,8 @@ def prepare(field, resolution, max_range, levels=4):
 
 
 def match_bnb(prep, resolution, origin, scan_xy, thetas=None, exclude=None):
-    """Branch-and-bound correlative match; same argmax as match_exhaustive.
+    """
+    Branch-and-bound correlative match; same argmax as match_exhaustive.
 
     Return dict: pose, score, n_beams. Depth-first with a best-first frontier;
     prunes any node whose max-pooled upper bound cannot beat the best leaf.
