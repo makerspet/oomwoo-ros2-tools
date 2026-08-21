@@ -45,6 +45,8 @@ setup(
             'global_relocalizer = '
             'oomwoo_localization.global_relocalizer_node:main',
             'reloc_eval = oomwoo_localization.reloc_eval_node:main',
+            'localization_manager = '
+            'oomwoo_localization.localization_manager_node:main',
         ],
     },
 )

@@ -27,7 +27,9 @@ or how to move -- that policy belongs to an application node. It only reports.
   tf   base_frame <- scan    (fold the lidar mount into the reported pose)
   srv  ~/relocalize          oomwoo_localization_msgs/Relocalize
   pub  ~/relocalized_pose    geometry_msgs/PoseWithCovarianceStamped (last fix)
-  pub  /initialpose          only if publish_initialpose AND the fix is accepted
+  pub  /initialpose          DEBUG ONLY (publish_initialpose), for eyeballing in
+                             RViz -- in production localization_manager owns the
+                             decision to commit a fix; this node never acts
 """
 
 import math
@@ -83,6 +85,8 @@ class GlobalRelocalizer(Node):
         self.min_conf = self.declare_parameter('min_confidence', 0.15).value
         self.exclude_m = self.declare_parameter('exclude_radius_m', 0.5).value
         self.stride = int(self.declare_parameter('beam_stride', 1).value)
+        # DEBUG ONLY: seed /initialpose so the RViz robot jumps to the fix.
+        # Production leaves this false -- localization_manager owns the commit.
         self.pub_init = self.declare_parameter(
             'publish_initialpose', False).value
         self.tf_timeout = self.declare_parameter('tf_timeout_s', 0.2).value
