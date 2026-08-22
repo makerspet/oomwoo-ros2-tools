@@ -42,10 +42,20 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('csv_path', default_value=''),
+        DeclareLaunchArgument(
+            'publish_initialpose', default_value='false',
+            description='Have global_relocalizer seed /initialpose on each '
+                        'accepted fix, so the robot visibly jumps in RViz '
+                        'during the batch run (for demos/recording). The eval '
+                        'still scores BnB against ground truth independently'),
         Node(
             package='oomwoo_localization', executable='global_relocalizer',
             name='global_relocalizer', output='screen',
-            parameters=[{'use_sim_time': sim}]),
+            parameters=[{
+                'use_sim_time': sim,
+                'publish_initialpose': ParameterValue(
+                    LaunchConfiguration('publish_initialpose'),
+                    value_type=bool)}]),
         Node(
             package='oomwoo_localization', executable='reloc_eval',
             name='reloc_eval', output='screen',
