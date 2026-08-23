@@ -71,6 +71,7 @@ class RelocEval(Node):
         self.clearance = self.declare_parameter('clearance_m', 0.25).value
         self.free_max = int(self.declare_parameter('free_max', 20).value)
         self.settle = self.declare_parameter('settle_s', 2.5).value
+        self.hold = self.declare_parameter('hold_s', 0.0).value
         self.call_timeout = self.declare_parameter('call_timeout_s', 15.0).value
         self.max_pos = self.declare_parameter('max_pos_err_m', 0.20).value
         self.max_yaw = math.radians(
@@ -196,6 +197,8 @@ class RelocEval(Node):
                 % (i + 1, len(targets), perr, math.degrees(yerr),
                    resp.confidence, resp.success,
                    'OK' if correct else 'WRONG'))
+            if self.hold > 0.0:
+                self._spin(self.hold)      # dwell so the aligned fix is visible
         return self._report(rows)
 
     def _report(self, rows) -> int:

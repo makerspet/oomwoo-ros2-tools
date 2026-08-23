@@ -48,6 +48,14 @@ def generate_launch_description() -> LaunchDescription:
                         'accepted fix, so the robot visibly jumps in RViz '
                         'during the batch run (for demos/recording). The eval '
                         'still scores BnB against ground truth independently'),
+        DeclareLaunchArgument(
+            'settle_s', default_value='2.5',
+            description='Seconds to wait after each kidnap before relocalizing'),
+        DeclareLaunchArgument(
+            'hold_s', default_value='0.0',
+            description='Seconds to dwell AFTER each fix before the next '
+                        'kidnap, so the re-seeded (scan-aligned) pose is '
+                        'visible in RViz -- set e.g. 3.0 when recording'),
         Node(
             package='oomwoo_localization', executable='global_relocalizer',
             name='global_relocalizer', output='screen',
@@ -61,5 +69,9 @@ def generate_launch_description() -> LaunchDescription:
             name='reloc_eval', output='screen',
             parameters=[{
                 'use_sim_time': sim,
-                'csv_path': LaunchConfiguration('csv_path')}]),
+                'csv_path': LaunchConfiguration('csv_path'),
+                'settle_s': ParameterValue(
+                    LaunchConfiguration('settle_s'), value_type=float),
+                'hold_s': ParameterValue(
+                    LaunchConfiguration('hold_s'), value_type=float)}]),
     ])
