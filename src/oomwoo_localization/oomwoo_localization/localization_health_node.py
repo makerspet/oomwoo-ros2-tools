@@ -38,12 +38,18 @@ than max_filter_frac of the scan, so it cannot starve the matcher. (That guard i
 also why the filter helps day-to-day tracking, not a lost relocalize: rejecting
 outliers needs a pose you can still believe.)
 
+For perception experiments, ~/scan_scored republishes the FULL scan (nothing
+dropped) with each ray's static-ness -- exp(-d^2 / 2 sigma^2), 1.0 on a mapped
+wall and ->0 for a dynamic return -- in its intensity field, leaving clustering
+and recognition to the subscriber. Experimental; the encoding may change.
+
   sub  /scan               sensor_msgs/LaserScan   (SensorData QoS)
   sub  /map                nav_msgs/OccupancyGrid  (transient_local)
   tf   map -> scan frame   (looked up at each scan stamp)
   pub  ~/quality           std_msgs/Float32                 (inlier ratio)
   pub  /localization_lost  std_msgs/Empty                   (edge, when lost)
   pub  /scan_filtered      sensor_msgs/LaserScan     (scan minus dynamic obstacles)
+  pub  ~/scan_scored       sensor_msgs/LaserScan     (full scan; intensity=static-ness)
   pub  ~/dynamic_obstacles sensor_msgs/PointCloud2   (segmented outlier clusters)
   pub  ~/dist_histogram    std_msgs/Float32MultiArray       (per-scan, debug)
   pub  ~/scan_annotated    sensor_msgs/PointCloud2          (debug, map frame)
@@ -81,6 +87,13 @@ LBL_OUTLIER = 2.0       # unmatched, not part of a cluster (noise)
 LBL_CLUSTER0 = 10.0     # first dynamic-obstacle cluster; +1 per further cluster
 
 
+def static_score(d, sigma):
+    """Map per-ray wall distance d to static-ness in [0, 1] (1 = on a wall)."""
+    big = 10.0 * sigma
+    dd = np.minimum(np.where(np.isfinite(d), d, big), big)
+    return np.exp(-(dd * dd) / (2.0 * sigma * sigma))
+
+
 def map_qos() -> QoSProfile:
     return QoSProfile(
         depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -116,6 +129,9 @@ class LocalizationHealth(Node):
             'max_filter_frac', 0.4).value
         self.pub_dyn = self.declare_parameter(
             'publish_dynamic_obstacles', True).value
+        self.pub_scored = self.declare_parameter(
+            'publish_scored_scan', True).value
+        self.score_sigma = self.declare_parameter('score_sigma_m', 0.10).value
 
         self._df = None       # distance-to-nearest-wall field (m), (h, w)
         self._res = 0.0
@@ -142,6 +158,8 @@ class LocalizationHealth(Node):
             LaserScan, '/scan_filtered', qos_profile_sensor_data)
         self.dyn_pub = self.create_publisher(
             PointCloud2, '~/dynamic_obstacles', 5)
+        self.scored_pub = self.create_publisher(
+            LaserScan, '~/scan_scored', qos_profile_sensor_data)
         self.get_logger().info(
             'localization_health: quality = inliers within %.2fm; '
             'lost < %.2f (held %.1fs), recovered > %.2f'
@@ -216,6 +234,8 @@ class LocalizationHealth(Node):
             self._publish_filtered(msg, idx, labels, quality)
         if self.pub_dyn and labels is not None:
             self._publish_dynamic(msg.header.stamp, mx, my, labels, quality)
+        if self.pub_scored:
+            self._publish_scored(msg, idx, d)
         self._maybe_log(quality, inlier, d, now)
 
     def _to_map(self, tf, r, a):
@@ -314,6 +334,24 @@ class LocalizationHealth(Node):
             return                                  # only report when localized
         self.dyn_pub.publish(
             self._cloud(stamp, mx[cluster], my[cluster], labels[cluster]))
+
+    def _publish_scored(self, msg, idx, d) -> None:
+        # full scan, nothing dropped; intensity = static-ness in [0, 1]
+        # (1.0 = endpoint on a mapped wall, -> 0 = a dynamic return).
+        inten = np.zeros(len(msg.ranges), dtype=np.float32)
+        inten[idx] = static_score(d, self.score_sigma).astype(np.float32)
+        out = LaserScan()
+        out.header = msg.header
+        out.angle_min = msg.angle_min
+        out.angle_max = msg.angle_max
+        out.angle_increment = msg.angle_increment
+        out.time_increment = msg.time_increment
+        out.scan_time = msg.scan_time
+        out.range_min = msg.range_min
+        out.range_max = msg.range_max
+        out.ranges = msg.ranges
+        out.intensities = inten.tolist()
+        self.scored_pub.publish(out)
 
     def _update_lost(self, quality, now) -> None:
         if quality < self.lost_ratio:

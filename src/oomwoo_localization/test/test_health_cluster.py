@@ -49,3 +49,10 @@ def test_short_outlier_run_stays_noise():
     my = np.zeros(n)
     labels = lh.LocalizationHealth._label(_Params(), inlier, mx, my)
     assert (labels[10:12] == lh.LBL_OUTLIER).all()     # too short -> not a cluster
+
+
+def test_static_score_is_bounded_and_falls_off():
+    s = lh.static_score(np.array([0.0, 0.10, np.inf]), 0.10)
+    assert abs(s[0] - 1.0) < 1e-6      # endpoint on a wall -> fully static
+    assert 0.5 < s[1] < 0.7            # one sigma out -> exp(-0.5) ~ 0.61
+    assert s[2] < 0.01                # dynamic / off-map return -> ~0
