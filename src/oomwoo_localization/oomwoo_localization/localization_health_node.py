@@ -28,14 +28,23 @@ A kidnap makes almost nothing match -> quality collapses -> /localization_lost.
 An unmapped shoe/box only blanks a contiguous chunk -> quality stays high -> no
 false alarm. The same inlier/outlier split (and a contiguity clustering of the
 outliers) is published as an annotated point cloud plus a distance histogram so
-the classification can be eyeballed in RViz. Clustering here is for VISIBILITY
-only; scan filtering and dynamic-obstacle output come in a later version.
+the classification can be eyeballed in RViz. The contiguous outlier clusters are
+also treated as dynamic obstacles: their beams are stripped from a republished
+/scan_filtered so a stray box or chair no longer drags the running scan match
+down, and the clusters themselves go out on ~/dynamic_obstacles. Filtering runs
+ONLY while the pose is trusted (quality high) -- when lost, every beam looks like
+an outlier, so it passes the scan through untouched -- and it never blanks more
+than max_filter_frac of the scan, so it cannot starve the matcher. (That guard is
+also why the filter helps day-to-day tracking, not a lost relocalize: rejecting
+outliers needs a pose you can still believe.)
 
   sub  /scan               sensor_msgs/LaserScan   (SensorData QoS)
   sub  /map                nav_msgs/OccupancyGrid  (transient_local)
   tf   map -> scan frame   (looked up at each scan stamp)
   pub  ~/quality           std_msgs/Float32                 (inlier ratio)
   pub  /localization_lost  std_msgs/Empty                   (edge, when lost)
+  pub  /scan_filtered      sensor_msgs/LaserScan     (scan minus dynamic obstacles)
+  pub  ~/dynamic_obstacles sensor_msgs/PointCloud2   (segmented outlier clusters)
   pub  ~/dist_histogram    std_msgs/Float32MultiArray       (per-scan, debug)
   pub  ~/scan_annotated    sensor_msgs/PointCloud2          (debug, map frame)
 """
@@ -100,6 +109,13 @@ class LocalizationHealth(Node):
         self.tf_timeout = self.declare_parameter('tf_timeout_s', 0.10).value
         self.pub_annot = self.declare_parameter('publish_annotated', True).value
         self.pub_hist = self.declare_parameter('publish_histogram', True).value
+        self.filter_on = self.declare_parameter('filter_enable', True).value
+        self.filter_min_q = self.declare_parameter(
+            'filter_min_quality', 0.6).value
+        self.max_filter_frac = self.declare_parameter(
+            'max_filter_frac', 0.4).value
+        self.pub_dyn = self.declare_parameter(
+            'publish_dynamic_obstacles', True).value
 
         self._df = None       # distance-to-nearest-wall field (m), (h, w)
         self._res = 0.0
@@ -122,6 +138,10 @@ class LocalizationHealth(Node):
         self.hist_pub = self.create_publisher(
             Float32MultiArray, '~/dist_histogram', 10)
         self.cloud_pub = self.create_publisher(PointCloud2, '~/scan_annotated', 5)
+        self.filt_pub = self.create_publisher(
+            LaserScan, '/scan_filtered', qos_profile_sensor_data)
+        self.dyn_pub = self.create_publisher(
+            PointCloud2, '~/dynamic_obstacles', 5)
         self.get_logger().info(
             'localization_health: quality = inliers within %.2fm; '
             'lost < %.2f (held %.1fs), recovered > %.2f'
@@ -186,10 +206,16 @@ class LocalizationHealth(Node):
         if self.pub_hist:
             self.hist_pub.publish(Float32MultiArray(
                 data=self._histogram(d).astype(np.float32).tolist()))
-        if self.pub_annot:
+        labels = None
+        if self.pub_annot or self.filter_on or self.pub_dyn:
             labels = self._label(inlier, mx, my)
+        if self.pub_annot:
             self.cloud_pub.publish(
                 self._cloud(msg.header.stamp, mx, my, labels))
+        if self.filter_on:
+            self._publish_filtered(msg, idx, labels, quality)
+        if self.pub_dyn and labels is not None:
+            self._publish_dynamic(msg.header.stamp, mx, my, labels, quality)
         self._maybe_log(quality, inlier, d, now)
 
     def _to_map(self, tf, r, a):
@@ -255,6 +281,39 @@ class LocalizationHealth(Node):
         msg.is_dense = True
         msg.data = buf.tobytes()
         return msg
+
+    def _publish_filtered(self, msg, idx, labels, quality) -> None:
+        cluster = labels >= LBL_CLUSTER0
+        n_cl = int(cluster.sum())
+        frac = n_cl / max(len(msg.ranges), 1)
+        # only strip obstacles when the pose is trusted (else every beam is an
+        # "outlier"), and never blank so much of the scan that matching starves
+        if (n_cl == 0 or quality < self.filter_min_q
+                or frac > self.max_filter_frac):
+            self.filt_pub.publish(msg)              # pass the scan through
+            return
+        ranges = list(msg.ranges)
+        for j in np.nonzero(cluster)[0]:
+            ranges[int(idx[j])] = float('inf')      # blank the obstacle beam
+        out = LaserScan()
+        out.header = msg.header
+        out.angle_min = msg.angle_min
+        out.angle_max = msg.angle_max
+        out.angle_increment = msg.angle_increment
+        out.time_increment = msg.time_increment
+        out.scan_time = msg.scan_time
+        out.range_min = msg.range_min
+        out.range_max = msg.range_max
+        out.ranges = ranges
+        out.intensities = msg.intensities
+        self.filt_pub.publish(out)
+
+    def _publish_dynamic(self, stamp, mx, my, labels, quality) -> None:
+        cluster = labels >= LBL_CLUSTER0
+        if quality < self.filter_min_q or not cluster.any():
+            return                                  # only report when localized
+        self.dyn_pub.publish(
+            self._cloud(stamp, mx[cluster], my[cluster], labels[cluster]))
 
     def _update_lost(self, quality, now) -> None:
         if quality < self.lost_ratio:
