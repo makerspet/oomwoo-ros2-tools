@@ -48,6 +48,7 @@ setup(
             'initialpose_pub = oomwoo_sim_support.initialpose_pub_node:main',
             'localization_error = '
             'oomwoo_sim_support.localization_error_node:main',
+            'odom_slip = oomwoo_sim_support.odom_slip_node:main',
             'relocalize_on_lost = '
             'oomwoo_sim_support.relocalize_on_lost_node:main',
             'reloc_regression_runner = oomwoo_sim_support.reloc_regression_runner:main',
