@@ -131,7 +131,10 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
             'map_file_name': serial_str,
             'map_start_pose': [x, y, th]}],
         remappings=[('/map', '/map_slam'),
-                    ('/map_metadata', '/map_slam_metadata')])
+                    ('/map_metadata', '/map_slam_metadata')],
+        # hush Ceres's glog "num_threads 50 > 24" spam (harmless: it just caps
+        # to the cores available); slam_toolbox hard-codes 50, so silence glog.
+        additional_env={'GLOG_minloglevel': '2'})
     slam_configure = EmitEvent(event=ChangeState(
         lifecycle_node_matcher=matches_action(slam),
         transition_id=Transition.TRANSITION_CONFIGURE))
