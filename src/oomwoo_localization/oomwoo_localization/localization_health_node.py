@@ -331,7 +331,11 @@ class LocalizationHealth(Node):
     def _publish_dynamic(self, stamp, mx, my, labels, quality) -> None:
         cluster = labels >= LBL_CLUSTER0
         if quality < self.filter_min_q or not cluster.any():
-            return                                  # only report when localized
+            # publish an EMPTY cloud so RViz clears the previous obstacles --
+            # otherwise a one-off false blob lingers until the next one replaces
+            # it. Only report obstacles at all when the pose is trusted.
+            self.dyn_pub.publish(self._cloud(stamp, mx[:0], my[:0], labels[:0]))
+            return
         self.dyn_pub.publish(
             self._cloud(stamp, mx[cluster], my[cluster], labels[cluster]))
 
