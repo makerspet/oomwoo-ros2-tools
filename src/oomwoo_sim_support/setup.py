@@ -49,6 +49,8 @@ setup(
             'localization_error = '
             'oomwoo_sim_support.localization_error_node:main',
             'odom_slip = oomwoo_sim_support.odom_slip_node:main',
+            'scan_obstacle_injector = '
+            'oomwoo_sim_support.scan_obstacle_injector_node:main',
             'relocalize_on_lost = '
             'oomwoo_sim_support.relocalize_on_lost_node:main',
             'reloc_regression_runner = oomwoo_sim_support.reloc_regression_runner:main',
