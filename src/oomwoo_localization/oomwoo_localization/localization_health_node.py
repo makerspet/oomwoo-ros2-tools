@@ -29,19 +29,21 @@ An unmapped shoe/box only blanks a contiguous chunk -> quality stays high -> no
 false alarm. The same inlier/outlier split (and a contiguity clustering of the
 outliers) is published as an annotated point cloud plus a distance histogram so
 the classification can be eyeballed in RViz. The contiguous outlier clusters are
-also treated as dynamic obstacles: their beams are stripped from a republished
-/scan_filtered so a stray box or chair no longer drags the running scan match
-down, and the clusters themselves go out on ~/dynamic_obstacles. Filtering runs
-ONLY while the pose is trusted (quality high) -- when lost, every beam looks like
-an outlier, so it passes the scan through untouched -- and it never blanks more
-than max_filter_frac of the scan, so it cannot starve the matcher. (That guard is
-also why the filter helps day-to-day tracking, not a lost relocalize: rejecting
-outliers needs a pose you can still believe.)
+also treated as dynamic obstacles for LOCALIZATION only. Their non-wall beams are stripped out of a
+republished /scan_filtered so a stray box or chair no longer drags the running
+scan match down. Filtering runs ONLY while the pose is trusted (quality high)
+-- when lost, every beam looks like an outlier, so it passes the scan
+through untouched -- and it never blanks more than max_filter_frac of the scan,
+so it cannot starve the matcher. (That guard is also why the filter helps
+day-to-day tracking, not a lost relocalize: rejecting outliers needs a pose you
+can still believe.)
 
 For perception experiments, ~/scan_scored republishes the FULL scan (nothing
 dropped) with each ray's static-ness -- exp(-d^2 / 2 sigma^2), 1.0 on a mapped
 wall and ->0 for a dynamic return -- in its intensity field, leaving clustering
-and recognition to the subscriber. Experimental; the encoding may change.
+and recognition to the subscriber. DETECTING dynamic obstacles as objects is that
+subscriber's job (see oomwoo_perception/dynamic_object_detector), not this
+monitor's -- health only measures and filters. Experimental; encoding may change.
 
   sub  /scan               sensor_msgs/LaserScan   (SensorData QoS)
   sub  /map                nav_msgs/OccupancyGrid  (transient_local)
@@ -50,7 +52,6 @@ and recognition to the subscriber. Experimental; the encoding may change.
   pub  /localization_lost  std_msgs/Empty                   (edge, when lost)
   pub  /scan_filtered      sensor_msgs/LaserScan     (scan minus dynamic obstacles)
   pub  ~/scan_scored       sensor_msgs/LaserScan     (full scan; intensity=static-ness)
-  pub  ~/dynamic_obstacles sensor_msgs/PointCloud2   (segmented outlier clusters)
   pub  ~/dist_histogram    std_msgs/Float32MultiArray       (per-scan, debug)
   pub  ~/scan_annotated    sensor_msgs/PointCloud2          (debug, map frame)
 """
@@ -127,8 +128,6 @@ class LocalizationHealth(Node):
             'filter_min_quality', 0.6).value
         self.max_filter_frac = self.declare_parameter(
             'max_filter_frac', 0.4).value
-        self.pub_dyn = self.declare_parameter(
-            'publish_dynamic_obstacles', True).value
         self.pub_scored = self.declare_parameter(
             'publish_scored_scan', True).value
         self.score_sigma = self.declare_parameter('score_sigma_m', 0.10).value
@@ -156,8 +155,6 @@ class LocalizationHealth(Node):
         self.cloud_pub = self.create_publisher(PointCloud2, '~/scan_annotated', 5)
         self.filt_pub = self.create_publisher(
             LaserScan, '/scan_filtered', qos_profile_sensor_data)
-        self.dyn_pub = self.create_publisher(
-            PointCloud2, '~/dynamic_obstacles', 5)
         self.scored_pub = self.create_publisher(
             LaserScan, '~/scan_scored', qos_profile_sensor_data)
         self.get_logger().info(
@@ -225,15 +222,13 @@ class LocalizationHealth(Node):
             self.hist_pub.publish(Float32MultiArray(
                 data=self._histogram(d).astype(np.float32).tolist()))
         labels = None
-        if self.pub_annot or self.filter_on or self.pub_dyn:
+        if self.pub_annot or self.filter_on:
             labels = self._label(inlier, mx, my)
         if self.pub_annot:
             self.cloud_pub.publish(
                 self._cloud(msg.header.stamp, mx, my, labels))
         if self.filter_on:
             self._publish_filtered(msg, idx, labels, quality)
-        if self.pub_dyn and labels is not None:
-            self._publish_dynamic(msg.header.stamp, mx, my, labels, quality)
         if self.pub_scored:
             self._publish_scored(msg, idx, d)
         self._maybe_log(quality, inlier, d, now)
@@ -327,17 +322,6 @@ class LocalizationHealth(Node):
         out.ranges = ranges
         out.intensities = msg.intensities
         self.filt_pub.publish(out)
-
-    def _publish_dynamic(self, stamp, mx, my, labels, quality) -> None:
-        cluster = labels >= LBL_CLUSTER0
-        if quality < self.filter_min_q or not cluster.any():
-            # publish an EMPTY cloud so RViz clears the previous obstacles --
-            # otherwise a one-off false blob lingers until the next one replaces
-            # it. Only report obstacles at all when the pose is trusted.
-            self.dyn_pub.publish(self._cloud(stamp, mx[:0], my[:0], labels[:0]))
-            return
-        self.dyn_pub.publish(
-            self._cloud(stamp, mx[cluster], my[cluster], labels[cluster]))
 
     def _publish_scored(self, msg, idx, d) -> None:
         # full scan, nothing dropped; intensity = static-ness in [0, 1]
