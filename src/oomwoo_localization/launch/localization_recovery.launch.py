@@ -15,10 +15,11 @@ r"""
 The full lost-detect -> relocalize -> decide recovery chain.
 
 Brings up the three pieces that cooperate but stay decoupled:
-  localization_health   detects lost -> /localization_lost
+  localization_health   measures scan-vs-map quality -> ~/quality (mechanism)
   global_relocalizer    ~/relocalize: best pose + confidence (pure mechanism)
-  localization_manager  the POLICY: commit a confident fix to /initialpose, or
-                        emit a fallback action (dock search, ...)
+  localization_manager  the POLICY: watch ~/quality, DECIDE lost
+                        (-> /localization_lost), commit a confident fix to
+                        /initialpose, or emit a fallback action (dock search)
 
 Run the sim + localization scene WITHOUT the old AMCL spin-recovery first:
 

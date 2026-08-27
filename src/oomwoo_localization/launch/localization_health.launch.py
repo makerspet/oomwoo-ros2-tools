@@ -19,9 +19,9 @@ Bring up the sim + localization first (e.g. localization_relocalize), then:
   ros2 launch oomwoo_localization localization_health.launch.py use_sim_time:=true
 
 Watch ~/quality (Float32) and the throttled console histogram; on a kidnap the
-quality collapses and /localization_lost fires. In RViz, add a PointCloud2 on
-~/scan_annotated coloured by intensity to eyeball which rays matched (inliers),
-which did not (outliers), and the outlier clusters.
+quality collapses (localization_manager turns that into /localization_lost). In
+RViz, add a PointCloud2 on ~/scan_annotated coloured by intensity to eyeball
+which rays matched (inliers), which did not (outliers), and the outlier clusters.
 """
 
 from launch import LaunchDescription

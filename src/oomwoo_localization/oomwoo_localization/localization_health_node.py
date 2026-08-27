@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Score live scans against the static map to flag when the robot is lost.
+Score live scans against the static map to measure localization quality.
 
 slam_toolbox keeps its scan-match quality internal, and neither its /pose
 covariance nor AMCL's rises on a clean kidnap (both stay confidently wrong). So
@@ -24,32 +24,32 @@ believes (map->scan from TF, continuous, unlike the sparse /pose topic).
   quality = fraction of valid beams whose endpoint is within match_dist_m of a
             mapped wall  (a hard inlier ratio, in [0, 1])
 
-A kidnap makes almost nothing match -> quality collapses -> /localization_lost.
-An unmapped shoe/box only blanks a contiguous chunk -> quality stays high -> no
-false alarm. The same inlier/outlier split (and a contiguity clustering of the
-outliers) is published as an annotated point cloud plus a distance histogram so
-the classification can be eyeballed in RViz. The contiguous outlier clusters are
-also treated as dynamic obstacles for LOCALIZATION only. Their non-wall beams are stripped out of a
-republished /scan_filtered so a stray box or chair no longer drags the running
-scan match down. Filtering runs ONLY while the pose is trusted (quality high)
--- when lost, every beam looks like an outlier, so it passes the scan
-through untouched -- and it never blanks more than max_filter_frac of the scan,
-so it cannot starve the matcher. (That guard is also why the filter helps
-day-to-day tracking, not a lost relocalize: rejecting outliers needs a pose you
-can still believe.)
+A kidnap makes almost nothing match -> quality collapses; an unmapped shoe/box
+only blanks a contiguous chunk -> quality stays high. Turning that quality into
+a "lost" DECISION (threshold + hold) is localization_manager's job now, not this
+monitor's -- health only measures. The same inlier/outlier split (and a
+contiguity clustering of the outliers) is published as an annotated point cloud
+plus a distance histogram so the classification can be eyeballed in RViz. The
+contiguous outlier clusters are also treated as dynamic obstacles for
+LOCALIZATION only: their non-wall beams are stripped out of a republished
+/scan_filtered so a stray box or chair no longer drags the running scan match
+down. Filtering runs ONLY while the pose is trusted (quality high) -- when lost,
+every beam looks like an outlier, so it passes the scan through untouched -- and
+it never blanks more than max_filter_frac of the scan, so it cannot starve the
+matcher. (That guard is also why the filter helps day-to-day tracking, not a
+lost relocalize: rejecting outliers needs a pose you can still believe.)
 
 For perception experiments, ~/scan_scored republishes the FULL scan (nothing
 dropped) with each ray's static-ness -- exp(-d^2 / 2 sigma^2), 1.0 on a mapped
 wall and ->0 for a dynamic return -- in its intensity field, leaving clustering
-and recognition to the subscriber. DETECTING dynamic obstacles as objects is that
-subscriber's job (see oomwoo_perception/dynamic_object_detector), not this
+and recognition to the subscriber. DETECTING dynamic obstacles as objects is
+that subscriber's job (see oomwoo_perception/dynamic_object_detector), not this
 monitor's -- health only measures and filters. Experimental; encoding may change.
 
   sub  /scan               sensor_msgs/LaserScan   (SensorData QoS)
   sub  /map                nav_msgs/OccupancyGrid  (transient_local)
   tf   map -> scan frame   (looked up at each scan stamp)
   pub  ~/quality           std_msgs/Float32                 (inlier ratio)
-  pub  /localization_lost  std_msgs/Empty                   (edge, when lost)
   pub  /scan_filtered      sensor_msgs/LaserScan     (scan minus dynamic obstacles)
   pub  ~/scan_scored       sensor_msgs/LaserScan     (full scan; intensity=static-ness)
   pub  ~/dist_histogram    std_msgs/Float32MultiArray       (per-scan, debug)
@@ -78,7 +78,7 @@ from scipy.ndimage import distance_transform_edt
 
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 
-from std_msgs.msg import Empty, Float32, Float32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray
 
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -108,9 +108,6 @@ class LocalizationHealth(Node):
         super().__init__('localization_health')
         self.global_frame = self.declare_parameter('global_frame', 'map').value
         self.match_dist = self.declare_parameter('match_dist_m', 0.10).value
-        self.lost_ratio = self.declare_parameter('lost_ratio', 0.5).value
-        self.ok_ratio = self.declare_parameter('ok_ratio', 0.7).value
-        self.lost_hold = self.declare_parameter('lost_hold_s', 1.0).value
         self.min_beams = int(self.declare_parameter('min_valid_beams', 30).value)
         self.stride = int(self.declare_parameter('beam_stride', 1).value)
         self.cluster_gap = self.declare_parameter('cluster_gap_m', 0.20).value
@@ -138,8 +135,6 @@ class LocalizationHealth(Node):
         self._oy = 0.0
         self._w = 0
         self._h = 0
-        self._t_low = None    # first time quality dropped below lost_ratio
-        self._armed = True    # False after firing, until quality recovers
         self._t_log = None
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -149,7 +144,6 @@ class LocalizationHealth(Node):
         self.create_subscription(
             LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
         self.q_pub = self.create_publisher(Float32, '~/quality', 10)
-        self.lost_pub = self.create_publisher(Empty, '/localization_lost', 10)
         self.hist_pub = self.create_publisher(
             Float32MultiArray, '~/dist_histogram', 10)
         self.cloud_pub = self.create_publisher(PointCloud2, '~/scan_annotated', 5)
@@ -158,9 +152,9 @@ class LocalizationHealth(Node):
         self.scored_pub = self.create_publisher(
             LaserScan, '~/scan_scored', qos_profile_sensor_data)
         self.get_logger().info(
-            'localization_health: quality = inliers within %.2fm; '
-            'lost < %.2f (held %.1fs), recovered > %.2f'
-            % (self.match_dist, self.lost_ratio, self.lost_hold, self.ok_ratio))
+            'localization_health: quality = fraction of beams within %.2fm of '
+            'a mapped wall (the lost DECISION lives in localization_manager)'
+            % self.match_dist)
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         w, h = msg.info.width, msg.info.height
@@ -217,7 +211,6 @@ class LocalizationHealth(Node):
 
         self.q_pub.publish(Float32(data=quality))
         now = self.get_clock().now()
-        self._update_lost(quality, now)
         if self.pub_hist:
             self.hist_pub.publish(Float32MultiArray(
                 data=self._histogram(d).astype(np.float32).tolist()))
@@ -340,24 +333,6 @@ class LocalizationHealth(Node):
         out.ranges = msg.ranges
         out.intensities = inten.tolist()
         self.scored_pub.publish(out)
-
-    def _update_lost(self, quality, now) -> None:
-        if quality < self.lost_ratio:
-            if self._t_low is None:
-                self._t_low = now
-            elif (self._armed
-                  and (now - self._t_low) > Duration(seconds=self.lost_hold)):
-                self.lost_pub.publish(Empty())
-                self._armed = False
-                self.get_logger().warn(
-                    'LOCALIZATION LOST (quality %.2f < %.2f) -- '
-                    '/localization_lost' % (quality, self.lost_ratio))
-        else:
-            self._t_low = None
-        if quality >= self.ok_ratio and not self._armed:
-            self._armed = True
-            self.get_logger().info(
-                'localization recovered (quality %.2f) -- re-armed' % quality)
 
     def _maybe_log(self, quality, inlier, d, now) -> None:
         if (self._t_log is not None
