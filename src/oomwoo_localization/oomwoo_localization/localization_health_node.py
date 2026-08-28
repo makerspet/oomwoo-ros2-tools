@@ -36,8 +36,11 @@ LOCALIZATION only: their non-wall beams are stripped out of a republished
 down. Filtering runs ONLY while the pose is trusted (quality high) -- when lost,
 every beam looks like an outlier, so it passes the scan through untouched -- and
 it never blanks more than max_filter_frac of the scan, so it cannot starve the
-matcher. (That guard is also why the filter helps day-to-day tracking, not a
-lost relocalize: rejecting outliers needs a pose you can still believe.)
+matcher. It likewise passes the scan through before the map or pose TF is ready,
+so a consumer matching /scan_filtered (e.g. slam) is never starved at startup --
+without that it would deadlock, needing the scan to publish the very TF the
+filter needs. (That guard is also why the filter helps day-to-day tracking, not
+a lost relocalize: rejecting outliers needs a pose you can still believe.)
 
 For perception experiments, ~/scan_scored republishes the FULL scan (nothing
 dropped) with each ray's static-ness -- exp(-d^2 / 2 sigma^2), 1.0 on a mapped
@@ -175,15 +178,28 @@ class LocalizationHealth(Node):
         self.get_logger().info(
             'map ready: %d x %d @ %.3f m/cell' % (w, h, self._res))
 
+    def _passthrough(self, msg) -> None:
+        """
+        Republish the raw scan on /scan_filtered so a consumer is not starved.
+
+        A node matching /scan_filtered (e.g. slam) would otherwise deadlock at
+        startup: it needs the scan to publish map->odom, which this node needs
+        (as TF) to filter. Failing open breaks that cycle.
+        """
+        if self.filter_on:
+            self.filt_pub.publish(msg)
+
     def _on_scan(self, msg: LaserScan) -> None:
         if self._df is None:
+            self._passthrough(msg)                  # fail-open: no map yet
             return
         try:
             tf = self.tf_buffer.lookup_transform(
                 self.global_frame, msg.header.frame_id, msg.header.stamp,
                 timeout=Duration(seconds=self.tf_timeout))
         except TransformException:
-            return                                  # TF not ready yet; skip scan
+            self._passthrough(msg)                  # fail-open: no pose TF yet
+            return
 
         ranges = np.asarray(msg.ranges, dtype=np.float64)
         n = ranges.size
@@ -198,6 +214,7 @@ class LocalizationHealth(Node):
             valid &= keep
         idx = np.nonzero(valid)[0]
         if idx.size < self.min_beams:
+            self._passthrough(msg)                  # fail-open: too few beams
             return
 
         mx, my = self._to_map(tf, ranges[idx], angles[idx])
