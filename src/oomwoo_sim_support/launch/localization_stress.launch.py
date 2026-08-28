@@ -12,27 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 r"""
-Stress localization with a large off-map obstacle, and A/B raw vs filtered scan.
+Score localization against a large off-map obstacle, and A/B raw vs filtered.
 
-scan_obstacle_injector paints a big obstacle into /scan -> /scan_stress;
-slam_toolbox localizes on it and loc_err_slam scores the pose against ground
-truth. slam_toolbox also publishes /map here (no nav2/AMCL needed), which is
-what localization_health scores against in the filtered arm.
+Spawn a real 3D obstacle with spawn_obstacle.launch.py -- it occludes the LiDAR
+physically, so it just appears in /scan. This launch localizes slam_toolbox and
+scores loc_err_slam against ground truth. slam_toolbox also publishes /map here
+(no nav2/AMCL needed), which localization_health scores against in the filtered
+arm.
 
-  filter:=false (default)  slam matches /scan_stress          -- does it degrade?
-  filter:=true             slam matches /scan_filtered, from   -- does stripping
-                           localization_health on /scan_stress    the obstacle help?
+  filter:=false (default)  slam matches /scan          -- does the obstacle degrade it?
+  filter:=true             slam matches /scan_filtered  -- does stripping the obstacle
+                           via localization_health recover the pose?
 
 Run (robot_wheels so /odom_truth is ground truth):
 
   ros2 launch oomwoo_gazebo world.launch.py odom_source:=robot_wheels
   ros2 launch oomwoo_sim_support localization_stress.launch.py use_sim_time:=true \\
-    map:=/ros_ws/src/oomwoo_gazebo/maps/living_room.yaml
-  # then again with filter:=true, and compare loc_err_slam between the two:
-  ros2 run foxglove_bridge foxglove_bridge   # plot /loc_err_slam/yaw_err_deg, pos_err_m
+    map:=/ros_ws/src/oomwoo_gazebo/maps/living_room.yaml rviz:=true
+  ros2 launch oomwoo_sim_support spawn_obstacle.launch.py x:=0.0 y:=-0.5
+  ros2 run kaiaai_teleop teleop_keyboard   # drive toward / around the wall
 
-Widen/sweep the obstacle to find where it bites:
-  obstacle_width_deg:=90 obstacle_sweep:=true
+Re-run with filter:=true and compare loc_err_slam between the two arms
+(/loc_err_slam/pos_err_m, /loc_err_slam/yaw_err_deg).
 """
 
 import os
@@ -53,8 +54,7 @@ from lifecycle_msgs.msg import Transition
 
 
 def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
-               x_pose, y_pose, yaw, do_filter, width, rng, center, sweep,
-               rviz, rviz_config):
+               x_pose, y_pose, yaw, do_filter, rviz, rviz_config):
     sim = context.perform_substitution(use_sim_time).lower() == 'true'
     map_str = context.perform_substitution(map_yaml)
     serial_str = context.perform_substitution(serial_map)
@@ -71,17 +71,7 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
     slam_params = os.path.join(
         get_package_share_directory('oomwoo_sim_support'),
         'config', 'mapper_params_localization.yaml')
-    scan_src = '/scan_filtered' if filt else '/scan_stress'
-
-    injector = Node(
-        package='oomwoo_sim_support', executable='scan_obstacle_injector',
-        name='scan_obstacle_injector', output='screen',
-        parameters=[common, {
-            'input_topic': '/scan', 'output_topic': '/scan_stress',
-            'width_deg': float(context.perform_substitution(width)),
-            'range_m': float(context.perform_substitution(rng)),
-            'center_deg': float(context.perform_substitution(center)),
-            'sweep': context.perform_substitution(sweep).lower() == 'true'}])
+    scan_src = '/scan_filtered' if filt else '/scan'
 
     # slam_toolbox localization: owns map->odom AND publishes /map (which
     # localization_health scores against in the filtered arm).
@@ -112,14 +102,14 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         name='loc_err_slam', output='screen',
         parameters=[common, {'target_frame': 'map'}])
 
-    nodes = [injector, slam, slam_configure, slam_activate, truth, meter]
+    nodes = [slam, slam_configure, slam_activate, truth, meter]
     if filt:
-        # score/strip the STRESSED scan: remap /scan -> /scan_stress so
-        # /scan_filtered is the obstacle removed (when quality stays trusted).
+        # strip the obstacle out of /scan -> /scan_filtered (when quality is
+        # trusted) so slam matches the cleaned scan.
         nodes.append(Node(
             package='oomwoo_localization', executable='localization_health',
             name='localization_health', output='screen',
-            parameters=[common], remappings=[('/scan', '/scan_stress')]))
+            parameters=[common]))
     if rviz_on:
         if not os.path.isabs(rviz_cfg):
             rviz_cfg = os.path.join(
@@ -143,12 +133,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'filter', default_value='false',
             description='slam matches /scan_filtered (via localization_health) '
-                        'instead of the raw /scan_stress'),
-        DeclareLaunchArgument('obstacle_width_deg', default_value='60.0'),
-        DeclareLaunchArgument('obstacle_range_m', default_value='0.6'),
-        DeclareLaunchArgument('obstacle_center_deg', default_value='0.0'),
-        DeclareLaunchArgument('obstacle_sweep', default_value='false'),
-        DeclareLaunchArgument('rviz', default_value='false'),
+                        'instead of the raw /scan'),
+        DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('rviz_config', default_value='bump_map.rviz'),
         OpaqueFunction(function=make_nodes, args=[
             LaunchConfiguration('use_sim_time'),
@@ -158,10 +144,6 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration('y_pose'),
             LaunchConfiguration('yaw'),
             LaunchConfiguration('filter'),
-            LaunchConfiguration('obstacle_width_deg'),
-            LaunchConfiguration('obstacle_range_m'),
-            LaunchConfiguration('obstacle_center_deg'),
-            LaunchConfiguration('obstacle_sweep'),
             LaunchConfiguration('rviz'),
             LaunchConfiguration('rviz_config'),
         ]),
