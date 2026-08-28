@@ -16,9 +16,12 @@ Score localization against a large off-map obstacle, and A/B raw vs filtered.
 
 Spawn a real 3D obstacle with spawn_obstacle.launch.py -- it occludes the LiDAR
 physically, so it just appears in /scan. This launch localizes slam_toolbox and
-scores loc_err_slam against ground truth. slam_toolbox also publishes /map here
-(no nav2/AMCL needed), which localization_health scores against in the filtered
-arm.
+scores loc_err_slam against ground truth. A nav2 map_server publishes the FIXED
+saved map on /map -- that is localization_health's reference in the filtered arm.
+slam_toolbox's own /map is remapped to /map_slam, because in localization mode
+its rolling scan buffer draws a lingering obstacle into the map it publishes, so
+its /map is not a stable off-map reference. Stripping the obstacle from /scan
+before slam (filter:=true) also keeps slam from absorbing it in the first place.
 
   filter:=false (default)  slam matches /scan          -- does the obstacle degrade it?
   filter:=true             slam matches /scan_filtered  -- does stripping the obstacle
@@ -73,8 +76,24 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         'config', 'mapper_params_localization.yaml')
     scan_src = '/scan_filtered' if filt else '/scan'
 
-    # slam_toolbox localization: owns map->odom AND publishes /map (which
-    # localization_health scores against in the filtered arm).
+    # nav2 map_server: the FIXED saved map on /map -- a stable off-map reference
+    # for localization_health (slam's own /map drifts in localization mode).
+    map_server = LifecycleNode(
+        package='nav2_map_server', executable='map_server',
+        name='map_server', namespace='', output='screen',
+        parameters=[common, {'yaml_filename': map_str, 'frame_id': 'map'}])
+    ms_configure = EmitEvent(event=ChangeState(
+        lifecycle_node_matcher=matches_action(map_server),
+        transition_id=Transition.TRANSITION_CONFIGURE))
+    ms_activate = RegisterEventHandler(OnStateTransition(
+        target_lifecycle_node=map_server, start_state='configuring',
+        goal_state='inactive',
+        entities=[EmitEvent(event=ChangeState(
+            lifecycle_node_matcher=matches_action(map_server),
+            transition_id=Transition.TRANSITION_ACTIVATE))]))
+
+    # slam_toolbox localization: owns map->odom. Its own /map -> /map_slam so it
+    # does not collide with (or overwrite) the map_server's fixed /map.
     slam = LifecycleNode(
         package='slam_toolbox', executable='localization_slam_toolbox_node',
         name='slam_toolbox', namespace='', output='screen',
@@ -82,6 +101,8 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
             'map_file_name': serial_str,
             'map_start_pose': [x, y, th],
             'scan_topic': scan_src}],
+        remappings=[('/map', '/map_slam'),
+                    ('/map_metadata', '/map_slam_metadata')],
         additional_env={'GLOG_minloglevel': '2'})
     slam_configure = EmitEvent(event=ChangeState(
         lifecycle_node_matcher=matches_action(slam),
@@ -102,7 +123,8 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         name='loc_err_slam', output='screen',
         parameters=[common, {'target_frame': 'map'}])
 
-    nodes = [slam, slam_configure, slam_activate, truth, meter]
+    nodes = [map_server, ms_configure, ms_activate,
+             slam, slam_configure, slam_activate, truth, meter]
     if filt:
         # strip the obstacle out of /scan -> /scan_filtered (when quality is
         # trusted) so slam matches the cleaned scan.
