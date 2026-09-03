@@ -22,11 +22,20 @@ live, e.g. ros2 param set /contour_follower standoff_m 0.22. Stop with Ctrl-C.
   ros2 launch oomwoo_sim_support localization_relocalize.launch.py use_sim_time:=true \\
     map:=/ros_ws/src/oomwoo_gazebo/maps/living_room.yaml
   ros2 run kaiaai_teleop teleop_keyboard          # park near a wall, then quit
-  ros2 launch oomwoo_clean contour_follow.launch.py use_sim_time:=true
+  ros2 launch oomwoo_clean contour_follow.launch.py use_sim_time:=true rviz:=true
+
+rviz:=true opens a decluttered view: the robot, the live scan, and the
+follower's own debug markers -- the boundary point it picked, the ray to it,
+the standoff target, the search sector, and the current state as text.
 """
+
+import os
+
+from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import Node
@@ -35,8 +44,14 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
+    rviz_config = os.path.join(
+        get_package_share_directory('oomwoo_clean'),
+        'rviz', 'contour_follow.rviz')
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument(
+            'rviz', default_value='false',
+            description='open RViz with the follower debug view'),
         DeclareLaunchArgument('follow_side', default_value='right'),
         DeclareLaunchArgument('standoff_m', default_value='0.20'),
         Node(
@@ -48,4 +63,10 @@ def generate_launch_description() -> LaunchDescription:
                 'standoff_m': ParameterValue(
                     LaunchConfiguration('standoff_m'), value_type=float),
             }]),
+        Node(
+            package='rviz2', executable='rviz2', name='rviz2', output='screen',
+            condition=IfCondition(LaunchConfiguration('rviz')),
+            arguments=['-d', rviz_config],
+            parameters=[{
+                'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}]),
     ])

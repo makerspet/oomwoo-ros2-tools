@@ -37,7 +37,7 @@ yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.m
 
 import math
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point, Twist
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -52,7 +52,9 @@ from rclpy.qos import (
 
 from sensor_msgs.msg import LaserScan
 
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
+
+from visualization_msgs.msg import Marker, MarkerArray
 
 TWO_PI = 2.0 * math.pi
 ACTIVE_STATES = ('ALIGN', 'FOLLOW', 'ARC')
@@ -66,10 +68,12 @@ DEFAULTS = {
     'sector_max_deg': 20.0,
     'max_follow_range_m': 1.0,     # ignore boundaries farther than this
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
-    'k_dist': 1.5,                 # rad/s per m of standoff error
-    'k_bearing': 1.2,              # rad/s per rad of bearing error
+    'k_approach': 2.0,             # rad of approach angle per m of standoff error
+    'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
+    'k_heading': 1.5,              # rad/s per rad of heading error
     'omega_max': 1.0,              # rad/s cap
-    'slow_angle_deg': 60.0,        # |bearing error| that eases v to the floor
+    'slow_angle_deg': 45.0,        # |heading error| that eases v to the floor
+    'publish_markers': True,       # ~/debug_markers for RViz
     'convex_jump_m': 0.30,         # d_min jump between frames that triggers ARC
     'convex_arc_radius_m': 0.30,   # ARC radius (~standoff + body offset)
     'convex_arc_max_deg': 200.0,   # ARC sweep with no re-acquire -> LOST
@@ -101,6 +105,9 @@ class ContourFollower(Node):
         self.prev_d = None            # last FOLLOW d_min, for the convex jump
         self.arc_swept = 0.0          # rad swept in the current ARC
         self._active_val = None       # last cleaning_active value published
+        self.scan_frame = 'base_scan'
+        self._dbg_d = None            # last nearest pick, for debug markers
+        self._dbg_b = None
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -109,6 +116,10 @@ class ContourFollower(Node):
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.active_pub = self.create_publisher(Bool, 'cleaning_active', latched)
         self.state_pub = self.create_publisher(String, '~/state', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, '~/debug_markers', 5)
+        self.err_d_pub = self.create_publisher(Float32, '~/standoff_err_m', 10)
+        self.err_b_pub = self.create_publisher(Float32, '~/bearing_err_deg', 10)
+        self.err_h_pub = self.create_publisher(Float32, '~/heading_err_deg', 10)
         self.create_subscription(
             LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
         self.create_subscription(Bool, '~/enable', self._on_enable, 10)
@@ -165,6 +176,8 @@ class ContourFollower(Node):
                 continue
             best_d = r
             best_b = b
+        self._dbg_d = best_d
+        self._dbg_b = best_b
         return best_d, best_b
 
     def _on_scan(self, msg: LaserScan) -> None:
@@ -175,10 +188,17 @@ class ContourFollower(Node):
             self._set_cmd(0.0, 0.0)
             return
 
+        self.scan_frame = msg.header.frame_id
         b_ref = math.radians(self._p('bearing_ref_deg'))
         smin = math.radians(self._p('sector_min_deg'))
         smax = math.radians(self._p('sector_max_deg'))
         max_r = self._p('max_follow_range_m')
+        self._dbg_d = None
+        self._dbg_b = None
+        self._step(msg, b_ref, smin, smax, max_r, dt)
+        self._pub_markers(b_ref, smin, smax)
+
+    def _step(self, msg, b_ref, smin, smax, max_r, dt) -> None:
 
         if self.state == 'ALIGN':
             self._align(msg, b_ref, max_r)
@@ -201,15 +221,23 @@ class ContourFollower(Node):
 
     def _follow(self, d, b, b_ref) -> None:
         e_d = d - self._p('standoff_m')
-        e_b = b - b_ref
-        # too far -> turn toward the wall (-); nearest point behind abeam -> turn
-        # toward it (-); ahead of abeam / closing (concave) -> turn away (+).
-        omega = -self._p('k_dist') * e_d + self._p('k_bearing') * e_b
-        omega = _clamp(omega, -self._p('omega_max'), self._p('omega_max'))
+        e_b = b - b_ref                  # + = currently angled toward the wall
+        # Outer loop: how far to angle toward/away, CAPPED. Without the cap a far
+        # wall demands a saturated turn that the heading term cancels, and the robot
+        # crawls in at the speed floor instead of approaching cleanly.
+        a_max = math.radians(self._p('alpha_max_deg'))
+        alpha = _clamp(self._p('k_approach') * e_d, -a_max, a_max)
+        # Inner loop: steer the actual angle onto the desired one.
+        e_h = alpha - e_b
+        omega = _clamp(-self._p('k_heading') * e_h,
+                       -self._p('omega_max'), self._p('omega_max'))
+        # Ease off only when the INNER loop is far off (a real corner); a steady
+        # approach has e_h ~ 0, so it runs at full speed.
         slow = math.radians(self._p('slow_angle_deg'))
-        v = self._p('v_nominal') * (1.0 - min(1.0, abs(e_b) / max(slow, 1e-3)))
+        v = self._p('v_nominal') * (1.0 - min(1.0, abs(e_h) / max(slow, 1e-3)))
         v = max(self._p('v_min'), v)
         self._set_cmd(v, self.side * omega)
+        self._pub_errors(e_d, e_b, e_h)
 
     def _arc(self, msg, smin, smax, max_r, b_ref, dt) -> None:
         v = max(self._p('v_min'), 0.5 * self._p('v_nominal'))
@@ -243,6 +271,84 @@ class ContourFollower(Node):
         omega = _clamp(
             self._p('k_align') * e, -self._p('align_omega'), self._p('align_omega'))
         self._set_cmd(0.0, self.side * omega)
+
+    def _mk(self, mid, mtype, stamp):
+        m = Marker()
+        m.header.frame_id = self.scan_frame
+        m.header.stamp = stamp
+        m.ns = 'contour_follower'
+        m.id = mid
+        m.type = mtype
+        m.action = Marker.ADD
+        m.pose.orientation.w = 1.0
+        m.lifetime.sec = 1
+        return m
+
+    def _pt(self, r, b, z=0.0):
+        p = Point()
+        p.x = r * math.cos(b)
+        p.y = r * math.sin(b)
+        p.z = z
+        return p
+
+    def _pub_markers(self, b_ref, smin, smax) -> None:
+        """
+        Draw the pick, the standoff target and the sector, for tuning.
+
+        Everything is in the scan frame, so the raw (un-mirrored) bearing is
+        side * the follow-side bearing the controller works in.
+        """
+        if not self._p('publish_markers'):
+            return
+        stamp = self.get_clock().now().to_msg()
+        s = self.side
+        arr = MarkerArray()
+        if self._dbg_d is not None:
+            hit = self._mk(0, Marker.SPHERE, stamp)
+            hit.scale.x = hit.scale.y = hit.scale.z = 0.06
+            hit.color.g = 1.0
+            hit.color.a = 1.0
+            hit.pose.position = self._pt(self._dbg_d, s * self._dbg_b)
+            arr.markers.append(hit)
+            ray = self._mk(1, Marker.LINE_LIST, stamp)
+            ray.scale.x = 0.01
+            ray.color.g = 1.0
+            ray.color.a = 0.8
+            ray.points = [self._pt(0.0, 0.0),
+                          self._pt(self._dbg_d, s * self._dbg_b)]
+            arr.markers.append(ray)
+        tgt = self._mk(2, Marker.SPHERE, stamp)
+        tgt.scale.x = tgt.scale.y = tgt.scale.z = 0.05
+        tgt.color.r = 0.2
+        tgt.color.b = 1.0
+        tgt.color.a = 0.9
+        tgt.pose.position = self._pt(self._p('standoff_m'), s * b_ref)
+        arr.markers.append(tgt)
+        sec = self._mk(3, Marker.LINE_LIST, stamp)
+        sec.scale.x = 0.006
+        sec.color.r = 1.0
+        sec.color.g = 0.6
+        sec.color.a = 0.5
+        rng = self._p('max_follow_range_m')
+        for edge in (smin, smax):
+            sec.points.append(self._pt(0.0, 0.0))
+            sec.points.append(self._pt(rng, s * edge))
+        arr.markers.append(sec)
+        txt = self._mk(4, Marker.TEXT_VIEW_FACING, stamp)
+        txt.scale.z = 0.07
+        txt.color.r = txt.color.g = txt.color.b = 1.0
+        txt.color.a = 0.9
+        txt.pose.position = self._pt(0.0, 0.0, 0.35)
+        shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
+        txt.text = '%s  d=%s  target=%.2f' % (
+            self.state, shown, self._p('standoff_m'))
+        arr.markers.append(txt)
+        self.marker_pub.publish(arr)
+
+    def _pub_errors(self, e_d, e_b, e_h) -> None:
+        self.err_d_pub.publish(Float32(data=float(e_d)))
+        self.err_b_pub.publish(Float32(data=float(math.degrees(e_b))))
+        self.err_h_pub.publish(Float32(data=float(math.degrees(e_h))))
 
 
 def main(args=None) -> None:
