@@ -40,6 +40,7 @@ import math
 from geometry_msgs.msg import Point, Twist
 
 import rclpy
+from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
@@ -78,7 +79,8 @@ DEFAULTS = {
     'convex_arc_radius_m': 0.30,   # ARC radius (~standoff + body offset)
     'convex_arc_max_deg': 200.0,   # ARC sweep with no re-acquire -> LOST
     'reacquire_margin_m': 0.15,    # ARC re-acquires when boundary <= standoff+this
-    'align_tol_deg': 10.0,         # ALIGN done when |bearing error| below this
+    'align_tol_deg': 3.0,          # ALIGN done when |bearing error| below this
+    'log_period_s': 1.0,           # throttled FOLLOW diagnostic line
     'k_align': 1.0,                # rad/s per rad, ALIGN rotation
     'align_omega': 0.5,            # rad/s cap for ALIGN rotation
     'pub_hz': 20.0,                # cmd_vel republish rate (control runs on scan)
@@ -108,6 +110,7 @@ class ContourFollower(Node):
         self.scan_frame = 'base_scan'
         self._dbg_d = None            # last nearest pick, for debug markers
         self._dbg_b = None
+        self._t_log = None            # last diagnostic log time
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -238,6 +241,7 @@ class ContourFollower(Node):
         v = max(self._p('v_min'), v)
         self._set_cmd(v, self.side * omega)
         self._pub_errors(e_d, e_b, e_h)
+        self._maybe_log(d, e_d, e_b, alpha, e_h, v, omega)
 
     def _arc(self, msg, smin, smax, max_r, b_ref, dt) -> None:
         v = max(self._p('v_min'), 0.5 * self._p('v_nominal'))
@@ -344,6 +348,27 @@ class ContourFollower(Node):
             self.state, shown, self._p('standoff_m'))
         arr.markers.append(txt)
         self.marker_pub.publish(arr)
+
+    def _maybe_log(self, d, e_d, e_b, alpha, e_h, v, omega) -> None:
+        """
+        Throttled one-liner of what the controller is actually steering on.
+
+        Reads: how far the picked boundary is vs the target, how far the robot is
+        currently angled toward it, how far we WANT it angled (the capped approach
+        angle), and the resulting command. If "toward" tracks "want", the loop is
+        doing its job and any residual angle is just the approach in progress.
+        """
+        now = self.get_clock().now()
+        period = Duration(seconds=float(self._p('log_period_s')))
+        if self._t_log is not None and (now - self._t_log) < period:
+            return
+        self._t_log = now
+        self.get_logger().info(
+            '%-6s d=%.2fm (target %.2f, err %+.2f)  toward=%+5.1f deg  '
+            'want=%+5.1f  err=%+5.1f  ->  v=%.2f w=%+.2f'
+            % (self.state, d, self._p('standoff_m'), e_d,
+               math.degrees(e_b), math.degrees(alpha), math.degrees(e_h),
+               v, omega))
 
     def _pub_errors(self, e_d, e_b, e_h) -> None:
         self.err_d_pub.publish(Float32(data=float(e_d)))
