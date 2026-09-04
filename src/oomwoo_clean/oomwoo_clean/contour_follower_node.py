@@ -16,10 +16,11 @@
 Reactive LiDAR contour follower: trace an obstacle's boundary at a fixed standoff.
 
 The proactive, any-shape generalization of the bumper-based wall_clean. Off the
-LiDAR it finds the NEAREST boundary point in a forward-biased sector on the follow
-side (default right) and servos two errors -- standoff distance and the point's
-bearing (want it abeam, -90 deg). That one law handles straight walls and CONCAVE
-inside corners. CONVEX outside corners get an explicit recovery: when the near
+LiDAR it isolates the followed surface in a forward-biased sector on the follow
+side (default right), FITS A LINE to it, and servos two errors -- the fitted
+perpendicular distance and the bearing to it (want it abeam, -90 deg). That one
+law handles straight walls and CONCAVE inside corners. CONVEX outside corners
+get an explicit recovery: when the near
 boundary vanishes (range jumps, or nothing left in the sector) the follower stops
 trusting the far reading and ARCS toward the follow side at ~standoff radius until
 it re-acquires -- "lose the wall, curve toward it". Left-follow is the mirror
@@ -68,6 +69,8 @@ DEFAULTS = {
     'sector_min_deg': -170.0,      # follow-side + forward window (right-follow)
     'sector_max_deg': 20.0,
     'max_follow_range_m': 1.0,     # ignore boundaries farther than this
+    'fit_gap_m': 0.10,             # max step between adjacent points on one surface
+    'min_fit_points': 6,           # below this, fall back to the nearest beam
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -111,6 +114,7 @@ class ContourFollower(Node):
         self._dbg_d = None            # last nearest pick, for debug markers
         self._dbg_b = None
         self._t_log = None            # last diagnostic log time
+        self._dbg_fit = None          # fitted segment endpoints, for markers
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -166,22 +170,79 @@ class ContourFollower(Node):
             self.arc_swept = 0.0
             self._set_state('ALIGN')
 
-    def _nearest(self, msg, smin, smax, max_r):
-        """Nearest valid boundary (d, bearing) in [smin, smax], follow-side frame."""
-        best_d = None
-        best_b = None
+    def _boundary(self, msg, smin, smax, max_r):
+        """
+        Fit the followed surface; return (perpendicular distance, bearing, n).
+
+        Seeds on the nearest beam in the sector, grows the contiguous surface
+        around it, then total-least-squares fits a line to those points and
+        reports the perpendicular distance to that line and the bearing to it.
+
+        Fitting rather than just taking the nearest beam matters. Near the
+        perpendicular the range is almost flat -- at 0.2 m, swinging 20 deg
+        changes it by 1.3 cm, while the beam-to-beam scatter is around 2 cm -- so
+        the ARG-min (which beam is closest) is essentially random over a wide arc,
+        and min() over noisy beams is a biased distance. The fit uses every point
+        on the surface, so the noise averages down and the wall angle falls out
+        directly instead of being inferred from a single beam.
+        """
+        count = len(msg.ranges)
+        pts = [None] * count
+        seed = None
+        seed_r = None
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r) or r < msg.range_min or r > max_r:
                 continue
             b = self.side * math.remainder(
                 msg.angle_min + i * msg.angle_increment, TWO_PI)
-            if b < smin or b > smax or (best_d is not None and r >= best_d):
+            if b < smin or b > smax:
                 continue
-            best_d = r
-            best_b = b
-        self._dbg_d = best_d
-        self._dbg_b = best_b
-        return best_d, best_b
+            pts[i] = (r * math.cos(b), r * math.sin(b), r, b)
+            if seed_r is None or r < seed_r:
+                seed, seed_r = i, r
+        if seed is None:
+            self._dbg_d = self._dbg_b = self._dbg_fit = None
+            return None, None, 0
+
+        # grow the contiguous surface either way from the seed
+        gap = self._p('fit_gap_m')
+        keep = [seed]
+        for step in (1, -1):
+            j = seed
+            while True:
+                k = (j + step) % count
+                if k == seed or pts[k] is None:
+                    break
+                if math.hypot(pts[k][0] - pts[j][0],
+                              pts[k][1] - pts[j][1]) > gap:
+                    break
+                keep.append(k)
+                j = k
+        sel = [pts[k] for k in keep]
+
+        if len(sel) < int(self._p('min_fit_points')):
+            self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
+            self._dbg_fit = None
+            return seed_r, pts[seed][3], len(sel)
+
+        m = float(len(sel))
+        cx = sum(p[0] for p in sel) / m
+        cy = sum(p[1] for p in sel) / m
+        sxx = sum((p[0] - cx) ** 2 for p in sel) / m
+        syy = sum((p[1] - cy) ** 2 for p in sel) / m
+        sxy = sum((p[0] - cx) * (p[1] - cy) for p in sel) / m
+        theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)   # line direction
+        nx, ny = -math.sin(theta), math.cos(theta)       # unit normal
+        dist = cx * nx + cy * ny                         # signed, origin to line
+        if dist < 0.0:
+            nx, ny, dist = -nx, -ny, -dist
+
+        ct, st = math.cos(theta), math.sin(theta)
+        ts = [(p[0] - cx) * ct + (p[1] - cy) * st for p in sel]
+        self._dbg_fit = ((cx + min(ts) * ct, cy + min(ts) * st),
+                         (cx + max(ts) * ct, cy + max(ts) * st))
+        self._dbg_d, self._dbg_b = dist, math.atan2(ny, nx)
+        return dist, math.atan2(ny, nx), len(sel)
 
     def _on_scan(self, msg: LaserScan) -> None:
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -208,7 +269,7 @@ class ContourFollower(Node):
             return
 
         if self.state == 'FOLLOW':
-            d, b = self._nearest(msg, smin, smax, max_r)
+            d, b, _ = self._boundary(msg, smin, smax, max_r)
             jumped = (self.prev_d is not None and d is not None
                       and (d - self.prev_d) > self._p('convex_jump_m'))
             if d is None or jumped:
@@ -247,7 +308,7 @@ class ContourFollower(Node):
         v = max(self._p('v_min'), 0.5 * self._p('v_nominal'))
         omega = -v / max(self._p('convex_arc_radius_m'), 1e-3)  # toward follow side
         self.arc_swept += abs(omega) * dt
-        d, b = self._nearest(msg, smin, smax, max_r)
+        d, b, _ = self._boundary(msg, smin, smax, max_r)
         if d is not None and d <= self._p('standoff_m') + self._p('reacquire_margin_m'):
             self.prev_d = d
             self._set_state('FOLLOW')
@@ -262,7 +323,7 @@ class ContourFollower(Node):
 
     def _align(self, msg, b_ref, max_r) -> None:
         # rotate in place to bring the nearest obstacle abeam on the follow side
-        d, b = self._nearest(msg, -math.pi, math.pi, max_r)
+        d, b, _ = self._boundary(msg, -math.pi, math.pi, max_r)
         if d is None:
             self._set_cmd(0.0, self.side * self._p('align_omega'))   # search
             return
@@ -328,6 +389,17 @@ class ContourFollower(Node):
         tgt.color.a = 0.9
         tgt.pose.position = self._pt(self._p('standoff_m'), s * b_ref)
         arr.markers.append(tgt)
+        if self._dbg_fit is not None:
+            fit = self._mk(5, Marker.LINE_LIST, stamp)
+            fit.scale.x = 0.012
+            fit.color.r = 1.0
+            fit.color.b = 1.0
+            fit.color.a = 0.9
+            for px, py in self._dbg_fit:
+                p = Point()
+                p.x, p.y, p.z = px, s * py, 0.0
+                fit.points.append(p)
+            arr.markers.append(fit)
         sec = self._mk(3, Marker.LINE_LIST, stamp)
         sec.scale.x = 0.006
         sec.color.r = 1.0
