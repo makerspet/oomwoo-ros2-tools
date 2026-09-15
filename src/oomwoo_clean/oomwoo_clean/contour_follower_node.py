@@ -17,9 +17,12 @@ Reactive LiDAR contour follower: trace an obstacle's boundary at a fixed standof
 
 The proactive, any-shape generalization of the bumper-based wall_clean. Off the
 LiDAR it isolates the followed surface in a forward-biased sector on the follow
-side (default right), FITS A LINE to it, and servos two errors -- the fitted
-perpendicular distance and the bearing to it (want it abeam, -90 deg). That one
-law handles straight walls and CONCAVE inside corners. CONVEX outside corners
+side (default right), FITS A CIRCLE to a short window of it, and servos two
+errors -- the distance to the fitted curve and the bearing of its nearest point
+(want it abeam, -90 deg). Fitting a curve rather than trusting the single nearest
+beam takes the noise out of the steering; keeping the window short keeps the
+estimate local, so it follows any shape -- straight wall, round stool leg or
+CONCAVE inside corner -- without smearing one into the next. CONVEX outside corners
 get an explicit recovery: when the near
 boundary vanishes (range jumps, or nothing left in the sector) the follower stops
 trusting the far reading and ARCS toward the follow side at ~standoff radius until
@@ -39,6 +42,8 @@ yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.m
 import math
 
 from geometry_msgs.msg import Point, Twist
+
+import numpy as np
 
 import rclpy
 from rclpy.duration import Duration
@@ -70,6 +75,7 @@ DEFAULTS = {
     'sector_max_deg': 20.0,
     'max_follow_range_m': 1.0,     # ignore boundaries farther than this
     'fit_gap_m': 0.10,             # max step between adjacent points on one surface
+    'fit_window_m': 0.15,          # fit only this far either way from the nearest point
     'min_fit_points': 6,           # below this, fall back to the nearest beam
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
@@ -114,7 +120,7 @@ class ContourFollower(Node):
         self._dbg_d = None            # last nearest pick, for debug markers
         self._dbg_b = None
         self._t_log = None            # last diagnostic log time
-        self._dbg_fit = None          # fitted segment endpoints, for markers
+        self._dbg_fit = None          # fitted curve polyline, for markers
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -136,7 +142,7 @@ class ContourFollower(Node):
         self._set_state('ALIGN' if self.enabled else 'IDLE')
         self.get_logger().info(
             'contour_follower: follow %s, standoff %.2fm '
-            '(nearest-point + convex arc; no loop-closure yet)'
+            '(local circle fit + convex arc; no loop-closure yet)'
             % (self._p('follow_side'), self._p('standoff_m')))
 
     def _p(self, name):
@@ -170,21 +176,58 @@ class ContourFollower(Node):
             self.arc_swept = 0.0
             self._set_state('ALIGN')
 
+    @staticmethod
+    def _fit_conic(sel):
+        """
+        Taubin circle fit -> A*(x^2+y^2) + B*x + C*y + D = 0, robot at origin.
+
+        Taubin's algebraic form is used rather than a centre/radius fit because A
+        (the curvature term) simply goes to zero on a straight surface instead of
+        sending the centre off to infinity, so one estimator covers walls and
+        round obstacles alike. Returns None if the window is degenerate.
+        """
+        x = np.array([p[0] for p in sel])
+        y = np.array([p[1] for p in sel])
+        xb, yb = x.mean(), y.mean()
+        u, v = x - xb, y - yb          # fit centred: keeps the SVD well scaled
+        z = u * u + v * v
+        zm = z.mean()
+        if zm <= 0.0:
+            return None
+        z0 = (z - zm) / (2.0 * math.sqrt(zm))
+        _, _, vt = np.linalg.svd(np.column_stack([z0, u, v]), full_matrices=False)
+        a0, a1, a2 = vt[2]
+        a0 /= 2.0 * math.sqrt(zm)
+        a3 = -zm * a0
+        return (a0,                                        # A
+                a1 - 2.0 * a0 * xb,                        # B  (un-centred)
+                a2 - 2.0 * a0 * yb,                        # C
+                a0 * (xb * xb + yb * yb) - a1 * xb - a2 * yb + a3)
+
     def _boundary(self, msg, smin, smax, max_r):
         """
-        Fit the followed surface; return (perpendicular distance, bearing, n).
+        Fit the followed surface; return (distance, bearing, n points used).
 
         Seeds on the nearest beam in the sector, grows the contiguous surface
-        around it, then total-least-squares fits a line to those points and
-        reports the perpendicular distance to that line and the bearing to it.
+        around it out to fit_window_m, fits a circle to that window, and reports
+        the distance from the robot to the fitted curve and the bearing of the
+        nearest point on it.
 
-        Fitting rather than just taking the nearest beam matters. Near the
-        perpendicular the range is almost flat -- at 0.2 m, swinging 20 deg
-        changes it by 1.3 cm, while the beam-to-beam scatter is around 2 cm -- so
-        the ARG-min (which beam is closest) is essentially random over a wide arc,
-        and min() over noisy beams is a biased distance. The fit uses every point
-        on the surface, so the noise averages down and the wall angle falls out
-        directly instead of being inferred from a single beam.
+        Why fit at all: near a wall's perpendicular the range is almost flat --
+        at 0.2 m, swinging 20 deg changes it by 1.3 cm against ~2 cm of beam
+        scatter -- so the ARG-min (which beam is nearest) is essentially random
+        over a wide arc, and min() over noisy beams is a biased distance.
+
+        Why a CIRCLE and a short window rather than a line over the whole
+        surface: a line is only right for walls. Measured against synthetic
+        scans at the sim LiDAR's specs, a whole-surface line fit smeared across
+        inside corners (wall + front wall as one 10 deg-tilted line, which turned
+        the robot ~0.8 m early) and gave +-15 deg on a 3 cm stool leg, where the
+        curve is nothing like a line. A circle's curvature term goes to zero on a
+        flat wall, so it reproduces the line fit there (+-0.8 deg), tracks round
+        obstacles (+-0.4 deg), and -- because the window is short -- ignores the
+        corner until the robot is at the standoff, turning where the nearest-beam
+        method turns but without its noise.
         """
         count = len(msg.ranges)
         pts = [None] * count
@@ -204,8 +247,11 @@ class ContourFollower(Node):
             self._dbg_d = self._dbg_b = self._dbg_fit = None
             return None, None, 0
 
-        # grow the contiguous surface either way from the seed
+        # Grow the contiguous surface either way from the seed, breaking at a
+        # range discontinuity (fit_gap_m) or at the window edge (fit_window_m).
+        # Kept in scan order, so the debug polyline traces the surface.
         gap = self._p('fit_gap_m')
+        win = self._p('fit_window_m')
         keep = [seed]
         for step in (1, -1):
             j = seed
@@ -216,33 +262,44 @@ class ContourFollower(Node):
                 if math.hypot(pts[k][0] - pts[j][0],
                               pts[k][1] - pts[j][1]) > gap:
                     break
-                keep.append(k)
+                if math.hypot(pts[k][0] - pts[seed][0],
+                              pts[k][1] - pts[seed][1]) > win:
+                    break
+                keep.append(k) if step == 1 else keep.insert(0, k)
                 j = k
         sel = [pts[k] for k in keep]
 
-        if len(sel) < int(self._p('min_fit_points')):
-            self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
-            self._dbg_fit = None
-            return seed_r, pts[seed][3], len(sel)
+        co = (self._fit_conic(sel)
+              if len(sel) >= int(self._p('min_fit_points')) else None)
+        if co is not None:
+            a, b_, c, d = co
+            grad = math.hypot(b_, c)
+            if grad > 1e-9:
+                # Distance from the robot to the curve, rationalized so the
+                # straight case (A -> 0) stays numerically sane; the direction
+                # toward the surface is the conic's gradient at the robot.
+                disc = max(0.0, b_ * b_ + c * c - 4.0 * a * d)
+                dist = 2.0 * abs(d) / (grad + math.sqrt(disc))
+                sg = -1.0 if d > 0.0 else 1.0
+                bear = math.atan2(sg * c, sg * b_)
+                self._dbg_d, self._dbg_b = dist, bear
+                self._dbg_fit = [self._project(p, a, b_, c, d)
+                                 for p in sel[::max(1, len(sel) // 12)]]
+                return dist, bear, len(sel)
 
-        m = float(len(sel))
-        cx = sum(p[0] for p in sel) / m
-        cy = sum(p[1] for p in sel) / m
-        sxx = sum((p[0] - cx) ** 2 for p in sel) / m
-        syy = sum((p[1] - cy) ** 2 for p in sel) / m
-        sxy = sum((p[0] - cx) * (p[1] - cy) for p in sel) / m
-        theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)   # line direction
-        nx, ny = -math.sin(theta), math.cos(theta)       # unit normal
-        dist = cx * nx + cy * ny                         # signed, origin to line
-        if dist < 0.0:
-            nx, ny, dist = -nx, -ny, -dist
+        self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
+        self._dbg_fit = None
+        return seed_r, pts[seed][3], len(sel)
 
-        ct, st = math.cos(theta), math.sin(theta)
-        ts = [(p[0] - cx) * ct + (p[1] - cy) * st for p in sel]
-        self._dbg_fit = ((cx + min(ts) * ct, cy + min(ts) * st),
-                         (cx + max(ts) * ct, cy + max(ts) * st))
-        self._dbg_d, self._dbg_b = dist, math.atan2(ny, nx)
-        return dist, math.atan2(ny, nx), len(sel)
+    @staticmethod
+    def _project(p, a, b, c, d):
+        """Pull a scan point onto the fitted curve, for the debug polyline."""
+        val = a * (p[0] * p[0] + p[1] * p[1]) + b * p[0] + c * p[1] + d
+        gx, gy = 2.0 * a * p[0] + b, 2.0 * a * p[1] + c
+        g2 = gx * gx + gy * gy
+        if g2 < 1e-18:
+            return p[0], p[1]
+        return p[0] - val * gx / g2, p[1] - val * gy / g2
 
     def _on_scan(self, msg: LaserScan) -> None:
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -390,7 +447,7 @@ class ContourFollower(Node):
         tgt.pose.position = self._pt(self._p('standoff_m'), s * b_ref)
         arr.markers.append(tgt)
         if self._dbg_fit is not None:
-            fit = self._mk(5, Marker.LINE_LIST, stamp)
+            fit = self._mk(5, Marker.LINE_STRIP, stamp)
             fit.scale.x = 0.012
             fit.color.r = 1.0
             fit.color.b = 1.0

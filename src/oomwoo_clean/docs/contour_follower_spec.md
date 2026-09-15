@@ -39,8 +39,25 @@ circles it keeping it on the right. Frame: 0° = forward, −90° = right, CCW +
 ### 3.1 Boundary extraction (per scan)
 - Look at a **follow-side, forward-biased sector**, e.g. bearings β ∈ [−170°, +20°]
   (right + front, for look-ahead).
-- **Nearest boundary point** P = the beam with the minimum range in that sector →
-  `(d_min, β_min)`.
+- **Nearest boundary point** P: seed on the beam with the minimum range in that
+  sector, then **fit a circle** to a short window of the contiguous surface around
+  it (`fit_window_m`, broken at range discontinuities by `fit_gap_m`), and take
+  `(d, β)` from the fitted curve — the distance from the robot to it and the
+  bearing of its nearest point. Below `min_fit_points` the raw seed beam is used.
+- Fitting is not optional polish. At a 0.2 m standoff a ±20° swing along a wall
+  changes the range by 1.3 cm, against ~2 cm of beam scatter, so the *arg*-min
+  beam is essentially random and `min()` over the beams is a biased distance —
+  measured ±7–8° of bearing noise, which the controller turns into a visible
+  weave. Median-filtering the scan barely helps (±6°): the flat minimum is the
+  problem, not the outliers.
+- The circle, rather than a line, is what makes it shape-general. Its curvature
+  term goes to zero on a flat wall, so it reproduces a line fit there (±0.8°),
+  but it also tracks round obstacles a line cannot (±0.4° on a 15 cm stool seat,
+  ±1.1° on a 3 cm leg, where a line fit gives ±15°).
+- The window must stay **short** (0.15 m) and local to the seed. Fitting the whole
+  visible surface smears an inside corner into one tilted line and turns the robot
+  ~0.8 m early; a 0.15 m window holds the wall to ±0.8° until the front wall is
+  0.22 m away, then hands over.
 - Ignore beams beyond `max_follow_range` so "nearest boundary" is *this* obstacle,
   not a far background wall.
 
