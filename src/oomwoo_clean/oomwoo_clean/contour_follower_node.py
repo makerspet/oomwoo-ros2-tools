@@ -39,11 +39,20 @@ and the output omega are both negated).
 Phase 1: FOLLOW + convex ARC, with a rotate-in-place ALIGN entry. No loop-closure
 yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.md.
 
-  subscribes  scan             sensor_msgs/LaserScan   (SensorData QoS)
-  subscribes  ~/enable         std_msgs/Bool           (runtime stop/go)
-  publishes   cmd_vel          geometry_msgs/Twist
-  publishes   cleaning_active  std_msgs/Bool           (latched; True while active)
-  publishes   ~/state          std_msgs/String         (ALIGN/FOLLOW/ARC/LOST)
+Bump = halt, for now: any bumper contact while active stops the robot dead and
+parks it in HALTED, so a collision is left exactly where it happened to be looked
+at, instead of being ground into or driven away from. Publish true on ~/enable
+to resume. A stand-in until a real front guard exists -- the follower steers only
+on the nearest surface, so something in its path that is farther than the
+followed wall is not avoided.
+
+  subscribes  scan                  sensor_msgs/LaserScan      (SensorData QoS)
+  subscribes  bumper_left/contact   ros_gz_interfaces/Contacts (halt_on_bump)
+  subscribes  bumper_right/contact  ros_gz_interfaces/Contacts (halt_on_bump)
+  subscribes  ~/enable              std_msgs/Bool              (stop/go; resumes HALTED)
+  publishes   cmd_vel               geometry_msgs/Twist
+  publishes   cleaning_active       std_msgs/Bool              (latched; True while active)
+  publishes   ~/state               std_msgs/String            (ALIGN/FOLLOW/ARC/LOST/HALTED)
 """
 
 import math
@@ -63,6 +72,8 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
+
+from ros_gz_interfaces.msg import Contacts
 
 from sensor_msgs.msg import LaserScan
 
@@ -108,6 +119,7 @@ DEFAULTS = {
     'align_omega': 0.5,            # rad/s cap for ALIGN rotation
     'pub_hz': 20.0,                # cmd_vel republish rate (control runs on scan)
     'auto_start': True,            # begin ALIGN on launch
+    'halt_on_bump': True,          # any bumper contact -> stop dead, state HALTED
 }
 
 
@@ -160,6 +172,12 @@ class ContourFollower(Node):
         self.create_subscription(
             LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
         self.create_subscription(Bool, '~/enable', self._on_enable, 10)
+        self.create_subscription(
+            Contacts, 'bumper_left/contact',
+            lambda m: self._on_bump(m, 'left'), 10)
+        self.create_subscription(
+            Contacts, 'bumper_right/contact',
+            lambda m: self._on_bump(m, 'right'), 10)
         self.create_timer(1.0 / max(self._p('pub_hz'), 1.0), self._pub_cmd)
 
         self.side = -1.0 if self._p('follow_side') == 'left' else 1.0
@@ -195,10 +213,34 @@ class ContourFollower(Node):
         if not self.enabled:
             self._set_cmd(0.0, 0.0)
             self._set_state('IDLE')
-        elif self.state in ('IDLE', 'LOST'):
+        elif self.state in ('IDLE', 'LOST', 'HALTED'):
             self.prev_d = None
             self.arc_swept = 0.0
             self._set_state('ALIGN')
+
+    def _on_bump(self, msg, which) -> None:
+        """
+        Stop dead on any bumper contact while active, and stay stopped.
+
+        The command is zeroed and published at once rather than on the next
+        timer tick, so the robot does not keep pushing for up to a cycle. The
+        log line records where the follower thought the surface was at the
+        moment of contact, which is the question the collision raises.
+        """
+        if not msg.contacts or not self._p('halt_on_bump'):
+            return
+        if self.state not in ACTIVE_STATES:
+            return
+        was = self.state
+        self._set_cmd(0.0, 0.0)
+        self.cmd_pub.publish(self.cmd)
+        self._set_state('HALTED')
+        seen = ('nothing' if self._dbg_d is None else
+                'surface at %.2f m, %+.0f deg' % (self._dbg_d, math.degrees(self._dbg_b)))
+        self.get_logger().warn(
+            'BUMP (%s bumper) during %s -- halted. Follower was tracking: %s [%s]. '
+            'Publish true on ~/enable to resume.'
+            % (which, was, seen, self._fit_description()))
 
     @staticmethod
     def _fit_conic(sel):
@@ -390,7 +432,7 @@ class ContourFollower(Node):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         dt = 0.0 if self.prev_t is None else max(0.0, t - self.prev_t)
         self.prev_t = t
-        if not self.enabled or self.state in ('IDLE', 'LOST'):
+        if not self.enabled or self.state in ('IDLE', 'LOST', 'HALTED'):
             self._set_cmd(0.0, 0.0)
             return
 

@@ -22,6 +22,8 @@ to the bound it says so, because that is a finding rather than a passing test.
 
 import math
 import random
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from oomwoo_clean import contour_harness as harness
 
@@ -221,3 +223,58 @@ def test_obstacle_in_the_path_is_avoided():
     world, start = harness.SCENARIOS['post_in_path']
     m = harness.run(world, start, seconds=20.0, seed=1)
     assert not m['hit'], 'min clearance %.3f m' % m['min_clearance']
+
+
+def _bump_ready(state, **overrides):
+    """Build a follower with its ROS plumbing stubbed, sitting in the given state."""
+    node, _params = harness.make_follower(**overrides)
+    node.state = state
+    node.enabled = True
+    node.cmd = SimpleNamespace(linear=SimpleNamespace(x=0.15),
+                               angular=SimpleNamespace(z=-0.4))
+    node.cmd_pub = MagicMock()
+    node.state_pub = MagicMock()
+    node.active_pub = MagicMock()
+    node._active_val = True
+    node.get_logger = MagicMock()
+    return node
+
+
+def test_bump_halts_an_active_follower():
+    """Any contact while following stops the robot at once and parks it."""
+    node = _bump_ready('FOLLOW')
+    node._on_bump(SimpleNamespace(contacts=[object()]), 'left')
+    assert node.state == 'HALTED'
+    assert node.cmd.linear.x == 0.0 and node.cmd.angular.z == 0.0
+    node.cmd_pub.publish.assert_called_once()        # sent now, not next tick
+    assert node._active_val is False                 # no longer counts as cleaning
+    node.get_logger().warn.assert_called_once()
+
+
+def test_empty_contact_messages_and_idle_states_are_ignored():
+    """The bumper topics publish empty lists too; and a parked robot stays parked."""
+    node = _bump_ready('FOLLOW')
+    node._on_bump(SimpleNamespace(contacts=[]), 'right')
+    assert node.state == 'FOLLOW' and node.cmd.linear.x == 0.15
+    for parked in ('IDLE', 'LOST', 'HALTED'):
+        node = _bump_ready(parked)
+        node._on_bump(SimpleNamespace(contacts=[object()]), 'right')
+        assert node.state == parked
+        node.cmd_pub.publish.assert_not_called()
+
+
+def test_halt_on_bump_can_be_switched_off():
+    """halt_on_bump:=false restores the old behaviour, for A/B runs."""
+    node = _bump_ready('FOLLOW', halt_on_bump=False)
+    node._on_bump(SimpleNamespace(contacts=[object()]), 'left')
+    assert node.state == 'FOLLOW'
+
+
+def test_enable_resumes_from_halted():
+    """Publishing true on ~/enable picks the robot back up with a fresh ALIGN."""
+    node = _bump_ready('HALTED')
+    node.prev_d = 0.3
+    node.arc_swept = 1.0
+    node._on_enable(SimpleNamespace(data=True))
+    assert node.state == 'ALIGN'
+    assert node.prev_d is None and node.arc_swept == 0.0

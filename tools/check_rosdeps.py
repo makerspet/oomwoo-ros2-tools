@@ -38,7 +38,7 @@ ROSDISTRO = 'https://raw.githubusercontent.com/ros/rosdistro/master'
 IGNORE_IMPORTS = {
     'argparse', 'collections', 'dataclasses', 'enum', 'functools', 'glob',
     'heapq', 'itertools', 'json', 'math', 'os', 'random', 're', 'subprocess',
-    'sys', 'tempfile', 'time', 'typing', 'unittest', 'xml',
+    'sys', 'tempfile', 'time', 'types', 'typing', 'unittest', 'xml',
 }
 # import name -> the dependency key that provides it
 IMPORT_TO_KEY = {'numpy': 'python3-numpy', 'yaml': 'python3-yaml',
