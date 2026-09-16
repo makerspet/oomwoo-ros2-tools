@@ -95,9 +95,8 @@ def make_nodes(context: LaunchContext, use_sim_time, map_yaml, serial_map,
         amcl_rewrites['recovery_alpha_fast'] = '0.1'
     amcl_params = RewrittenYaml(
         source_file=nav_str, param_rewrites=amcl_rewrites, convert_types=True)
-    # This image disables FastDDS shared memory, so inter-process lifecycle
-    # service calls are slow enough that a separate-process map_server times out
-    # the lifecycle_manager (configure fails, whole AMCL side aborts). Compose
+    # With map_server in a separate process, the lifecycle_manager's service
+    # calls to it timed out (configure failed, whole AMCL side aborted). Compose
     # the nav2 nodes into ONE container -- as navigation.launch.py does via
     # bringup_launch use_composition:=True -- so the lifecycle calls are
     # intra-process and instant.

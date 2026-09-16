@@ -43,8 +43,8 @@ def slam_toolbox_stack(desc_pkg_path, nav_params, map_path, serial_base,
     Nav2 navigation + slam_toolbox localization (no AMCL), composed.
 
     map_server + its lifecycle_manager and the navigation nodes load into ONE
-    component container (so lifecycle calls are intra-process and robust even
-    with FastDDS shared memory off), while slam_toolbox owns map->odom from the
+    component container (so lifecycle service calls stay intra-process),
+    while slam_toolbox owns map->odom from the
     serialized pose-graph. Navigation is started only once slam_toolbox is
     active, so map->odom exists before the costmaps come up.
     """
