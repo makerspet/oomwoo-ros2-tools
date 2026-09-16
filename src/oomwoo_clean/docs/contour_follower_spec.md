@@ -76,12 +76,22 @@ circles it keeping it on the right. Frame: 0° = forward, −90° = right, CCW +
   tangent path; a small forward lead may be added.
 
 ### 3.3 Command
-- Forward speed `v = v_nominal`, eased toward `v_min` when `|e_d|` or `|e_β|` is
-  large (a corner) — slow down to arc accurately.
-- Angular `ω = −k_dist·e_d − k_bearing·e_β` (signs set so: too far → turn *toward*
-  the obstacle; nearest point drifting *behind* abeam → turn toward it to
-  re-acquire; nearest point *ahead of* abeam and closing (concave) → turn away).
-  Gains and exact signs are tuned in sim.
+A **cascade**, not one summed law. The outer loop turns standoff error into a
+desired **approach angle**, capped at `alpha_max_deg` (40°); the inner loop steers
+the robot onto that angle:
+
+    α   = clamp(k_approach · e_d, ±α_max)      # how far to angle in/out
+    e_h = α − e_β                              # inner (heading) error
+    ω   = clamp(−k_heading · e_h, ±ω_max)
+
+- Forward speed `v = v_nominal`, eased toward `v_min` by the **inner** error
+  `|e_h|` (not `e_β`): a large bearing error is exactly what a legitimate far
+  approach looks like, and keying the ease-off to it made the robot crawl in at
+  the speed floor instead of closing.
+- Do **not** cap `v` by curvature to buy clearance in turns. Tried and measured
+  worse: the turn rate comes from the bearing error, so cutting `v` shrinks the
+  path radius `v/ω` and the robot spirals *in* — around a 2 cm leg, clearance fell
+  from 0.182 m to 0.083 m. The clearance fix is geometric (§3.2), not kinematic.
 - This one law covers **straight** (both errors ≈ 0), **concave** (P swings forward
   and closes → turn away, follow the inside corner), and the *onset* of **convex**
   (P swings behind abeam → turn toward, begin to arc).
@@ -104,9 +114,10 @@ circles it keeping it on the right. Frame: 0° = forward, −90° = right, CCW +
 
 ## 4. Standoff geometry
 
-- `standoff` = the perpendicular LiDAR-to-boundary distance we hold (measured
-  abeam, −90°). For a wall parallel to heading this equals the body-center
-  perpendicular distance (LiDAR fore/aft position doesn't change it).
+- `standoff` = the perpendicular **body-centre**-to-boundary distance we hold
+  (measured abeam, −90°; see §3.2). For a wall parallel to heading this equals the
+  LiDAR's own perpendicular distance — the fore/aft mount position doesn't change
+  it — so the two only differ in turns.
 - Constraints:
   1. `standoff ≥ lidar_min_range` (0.1 m) so the boundary is sensable.
   2. **Body clearance:** the body is a disk of radius `base_diameter/2 = 0.1745 m`;
