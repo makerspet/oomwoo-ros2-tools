@@ -227,6 +227,13 @@ SCENARIOS = {
     # follower has to wrap 180 degrees around. Currently grazes -- see
     # test_wrapping_a_wall_end_grazes_it.
     'wall_end': (([segment((-2.0, -0.6), (0.4, -0.6))], []), (-1.2, -0.4, 0.0)),
+    # Something standing IN the path, 10 cm left of the centreline, while the
+    # followed wall stays nearer. The follower only steers on the nearest
+    # surface, so the post is ignored until it swings out of the search sector
+    # -- then it is never seen at all. The torture-course panel and the second
+    # table leg in Gazebo were both this. Needs a front guard.
+    'post_in_path': (([segment((-2.0, -0.6), (2.0, -0.6))],
+                      [circle((0.3, -0.30), 0.02)]), (-1.2, -0.4, 0.0)),
 }
 
 

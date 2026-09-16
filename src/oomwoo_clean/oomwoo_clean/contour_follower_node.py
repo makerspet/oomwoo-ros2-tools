@@ -402,7 +402,7 @@ class ContourFollower(Node):
         self._dbg_d = None
         self._dbg_b = None
         self._step(msg, b_ref, smin, smax, max_r, dt)
-        self._pub_markers(b_ref, smin, smax)
+        self._pub_markers(b_ref)
 
     def _step(self, msg, b_ref, smin, smax, max_r, dt) -> None:
 
@@ -498,14 +498,14 @@ class ContourFollower(Node):
         p.z = z
         return p
 
-    def _pub_markers(self, b_ref, smin, smax) -> None:
+    def _pub_markers(self, b_ref) -> None:
         """
-        Draw the fitted curve, the pick, the standoff target and the sector.
+        Draw the fitted curve, the picked point and the standoff target.
 
-        Geometry only, deliberately: the state and the numbers go to the
-        throttled log line instead, because floating text over the robot is
-        clutter in a view whose job is to show where the robot thinks the
-        surface is.
+        Only what the controller is steering on, deliberately: the state and the
+        numbers go to the throttled log line, and the search sector's edge lines
+        were dropped too -- both were clutter in a view whose job is to show
+        where the robot thinks the surface is.
 
         Everything is in the scan frame, so the raw (un-mirrored) bearing is
         side * the follow-side bearing the controller works in.
@@ -559,16 +559,6 @@ class ContourFollower(Node):
                 p.x, p.y, p.z = px, s * py, 0.03
                 ends.points.append(p)
             arr.markers.append(ends)
-        sec = self._mk(3, Marker.LINE_LIST, stamp)
-        sec.scale.x = 0.006
-        sec.color.r = 1.0
-        sec.color.g = 0.6
-        sec.color.a = 0.5
-        rng = self._p('max_follow_range_m')
-        for edge in (smin, smax):
-            sec.points.append(self._pt(0.0, 0.0))
-            sec.points.append(self._pt(rng, s * edge))
-        arr.markers.append(sec)
         self.marker_pub.publish(arr)
 
     def _maybe_log(self, d, e_d, e_b, alpha, e_h, v, omega) -> None:

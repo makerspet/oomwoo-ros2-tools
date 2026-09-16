@@ -201,3 +201,23 @@ def test_body_measure_equals_lidar_measure_when_parallel():
         assert abs((d_ctrl - node._dbg_d) - expected_delta) < 0.01, (
             'normal %.0f deg: body-lidar delta %.3f, expected %.3f'
             % (normal_deg, d_ctrl - node._dbg_d, expected_delta))
+
+
+@pytest.mark.xfail(strict=True, reason='known: no front guard -- the follower only '
+                                       'steers on the nearest surface')
+def test_obstacle_in_the_path_is_avoided():
+    """
+    A post in the robot's path, nearer the centreline than the wall, gets hit.
+
+    The follower picks the single nearest surface in its search sector. While
+    the followed wall sits at 0.20 m, a post further ahead is never the nearest,
+    however squarely it sits in the path; by the time it would be, it has swung
+    past the sector's +20 deg edge and drops out of view entirely. Measured on
+    the torture course's first version: a panel end in view at +5 deg to +16 deg
+    for five seconds, never picked, hit at +43 deg. Same as the second table leg.
+
+    Strict, so it flips loudly the day a front guard lands.
+    """
+    world, start = harness.SCENARIOS['post_in_path']
+    m = harness.run(world, start, seconds=20.0, seed=1)
+    assert not m['hit'], 'min clearance %.3f m' % m['min_clearance']
