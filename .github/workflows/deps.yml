@@ -29,7 +29,17 @@ jobs:
       - name: rosdep install (fatal on unresolvable keys)
         run: |
           apt-get update
-          rosdep update --rosdistro jazzy
+          # rosdep update pulls rosdistro YAML straight from raw.githubusercontent
+          # and that connection gets reset often enough to redden CI on its own
+          # (seen: "urlopen error [Errno 104] Connection reset by peer"). The step
+          # runs under `sh -e`, so one reset used to fail the whole build. Retry.
+          updated=""
+          for attempt in 1 2 3; do
+            if rosdep update --rosdistro jazzy; then updated=yes; break; fi
+            echo "rosdep update failed (attempt $attempt of 3), retrying in 15s"
+            sleep 15
+          done
+          [ -n "$updated" ] || { echo "rosdep update failed 3 times"; exit 1; }
           rosdep install --from-paths src --ignore-src -y \
             --skip-keys "ros_gz_sim ros_gz_bridge $SOURCE_SIBLINGS"
           # belt-and-braces: the lint suites must exist even if a rosdep
