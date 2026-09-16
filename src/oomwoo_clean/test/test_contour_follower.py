@@ -142,12 +142,13 @@ def test_orbiting_a_leg_keeps_its_distance(name):
 
     Proportional control leaves a steady bearing droop on a curve -- the turn
     command has to come from somewhere, and the only source is the bearing error
-    itself (omega = k_heading * e_b, so e_b = omega / k_heading ~ 18 deg). The
-    robot therefore orbits nose-out, which costs clearance: a 2 cm leg measures
-    ~0.178 m against a 0.1745 m body radius, i.e. about 3 mm to spare. The gate
-    is only that it does not touch; closing that margin needs a control change,
-    not a threshold change, and a curvature feed-forward has already been tried
-    and measured WORSE (0.048 m).
+    itself (omega = k_heading * e_b, so e_b = omega / k_heading ~ 18 deg), so the
+    robot orbits nose-out. That used to cost most of the clearance: a 2 cm leg
+    measured ~0.178 m against a 0.1745 m body radius, about 3 mm to spare.
+    Measuring the standoff at the body centre absorbs the droop geometrically and
+    it now measures ~0.196 m. The droop itself is still there and still visible in
+    the logs -- two things that did NOT fix it, both measured worse, were a
+    curvature feed-forward (0.048 m) and capping speed in turns (0.083 m).
     """
     world, start = harness.SCENARIOS[name]
     m = harness.run(world, start, seconds=40.0, seed=1)

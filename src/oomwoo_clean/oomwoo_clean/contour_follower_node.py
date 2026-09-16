@@ -19,18 +19,22 @@ The proactive, any-shape generalization of the bumper-based wall_clean. Off the
 LiDAR it isolates the followed surface in a forward-biased sector on the follow
 side (default right), FITS A CIRCLE to a short window of it, and servos two
 errors -- the distance to the fitted curve and the bearing of its nearest point
-(want it abeam, -90 deg). That distance is measured at the BODY CENTRE rather
-than at the LiDAR, which is mounted ahead of the wheel axle: in a turn the shell
-swings wide of where the LiDAR points, so servoing the raw range grazed tight
-convex corners. Fitting a curve rather than trusting the single nearest
-beam takes the noise out of the steering; keeping the window short keeps the
-estimate local, so it follows any shape -- straight wall, round stool leg or
-CONCAVE inside corner -- without smearing one into the next. CONVEX outside corners
-get an explicit recovery: when the near
-boundary vanishes (range jumps, or nothing left in the sector) the follower stops
-trusting the far reading and ARCS toward the follow side at ~standoff radius until
-it re-acquires -- "lose the wall, curve toward it". Left-follow is the mirror
-(the scan bearings and the output omega are both negated).
+(want it abeam, -90 deg).
+
+Fitting a curve rather than trusting the single nearest beam takes the noise out
+of the steering, and keeping the window short keeps the estimate local, so it
+follows any shape -- straight wall, round table leg, or CONCAVE inside corner --
+without smearing one into the next.
+
+That distance is measured at the BODY CENTRE rather than at the LiDAR, which is
+mounted ahead of the wheel axle: in a turn the shell swings wide of where the
+LiDAR points, so servoing the raw range grazed tight convex corners.
+
+CONVEX outside corners get an explicit recovery: when the near boundary vanishes
+(range jumps, or nothing left in the sector) the follower stops trusting the far
+reading and ARCS toward the follow side at ~standoff radius until it re-acquires
+-- "lose the wall, curve toward it". Left-follow is the mirror (the scan bearings
+and the output omega are both negated).
 
 Phase 1: FOLLOW + convex ARC, with a rotate-in-place ALIGN entry. No loop-closure
 yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.md.
@@ -498,6 +502,11 @@ class ContourFollower(Node):
         """
         Draw the fitted curve, the pick, the standoff target and the sector.
 
+        Geometry only, deliberately: the state and the numbers go to the
+        throttled log line instead, because floating text over the robot is
+        clutter in a view whose job is to show where the robot thinks the
+        surface is.
+
         Everything is in the scan frame, so the raw (un-mirrored) bearing is
         side * the follow-side bearing the controller works in.
         """
@@ -560,26 +569,6 @@ class ContourFollower(Node):
             sec.points.append(self._pt(0.0, 0.0))
             sec.points.append(self._pt(rng, s * edge))
         arr.markers.append(sec)
-        txt = self._mk(4, Marker.TEXT_VIEW_FACING, stamp)
-        txt.scale.z = 0.07
-        txt.color.r = txt.color.g = txt.color.b = 1.0
-        txt.color.a = 0.9
-        txt.pose.position = self._pt(0.0, 0.0, 0.35)
-        if self._dbg_body is not None and self._p('use_body_clearance'):
-            shown = '%.2f (lidar %.2f)' % (self._dbg_body, self._dbg_d)
-        else:
-            shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
-        if self._dbg_fit is None:
-            fit_txt = 'no fit (%d pts)' % self._dbg_n
-        elif self._dbg_r is None or abs(self._dbg_r) > FLAT_RADIUS_M:
-            fit_txt = 'fit %d pts, straight' % self._dbg_n
-        else:
-            fit_txt = 'fit %d pts, R=%.2f (%s)' % (
-                self._dbg_n, abs(self._dbg_r),
-                'convex' if self._dbg_r > 0.0 else 'concave')
-        txt.text = '%s  d=%s  target=%.2f\n%s' % (
-            self.state, shown, self._p('standoff_m'), fit_txt)
-        arr.markers.append(txt)
         self.marker_pub.publish(arr)
 
     def _maybe_log(self, d, e_d, e_b, alpha, e_h, v, omega) -> None:
@@ -594,7 +583,9 @@ class ContourFollower(Node):
         d is what the controller servos -- by default the BODY centre's distance
         to the surface -- with the raw LiDAR range beside it in brackets. The two
         are equal running parallel to a wall and diverge in turns, which is
-        exactly where the robot used to graze.
+        exactly where the robot used to graze. The trailing bracket names the
+        surface the estimate came off -- how many points, and whether the fit
+        came out straight, convex (a leg) or concave (an inside corner).
         """
         now = self.get_clock().now()
         period = Duration(seconds=float(self._p('log_period_s')))
@@ -604,10 +595,20 @@ class ContourFollower(Node):
         lidar_d = '' if self._dbg_d is None else ' (lidar %.2f)' % self._dbg_d
         self.get_logger().info(
             '%-6s d=%.2fm%s (target %.2f, err %+.2f)  toward=%+5.1f deg  '
-            'want=%+5.1f  err=%+5.1f  ->  v=%.2f w=%+.2f'
+            'want=%+5.1f  err=%+5.1f  ->  v=%.2f w=%+.2f  [%s]'
             % (self.state, d, lidar_d, self._p('standoff_m'), e_d,
                math.degrees(e_b), math.degrees(alpha), math.degrees(e_h),
-               v, omega))
+               v, omega, self._fit_description()))
+
+    def _fit_description(self):
+        """One phrase naming the surface the estimate came off, for the log."""
+        if self._dbg_fit is None:
+            return 'no fit, %d pts' % self._dbg_n
+        if self._dbg_r is None or abs(self._dbg_r) > FLAT_RADIUS_M:
+            return 'fit %d pts, straight' % self._dbg_n
+        return 'fit %d pts, R=%.2f %s' % (
+            self._dbg_n, abs(self._dbg_r),
+            'convex' if self._dbg_r > 0.0 else 'concave')
 
     def _pub_errors(self, e_d, e_b, e_h) -> None:
         self.err_d_pub.publish(Float32(data=float(e_d)))
