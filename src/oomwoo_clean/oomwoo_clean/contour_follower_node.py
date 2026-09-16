@@ -65,6 +65,9 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 TWO_PI = 2.0 * math.pi
 ACTIVE_STATES = ('ALIGN', 'FOLLOW', 'ARC')
+# Display only: a fitted radius above this reads as a flat surface. Noise alone
+# bends a wall fit to R ~ 4 m, which is 3 mm of sag across a 0.15 m window.
+FLAT_RADIUS_M = 2.0
 
 DEFAULTS = {
     'follow_side': 'right',        # 'right' or 'left'
@@ -121,6 +124,8 @@ class ContourFollower(Node):
         self._dbg_b = None
         self._t_log = None            # last diagnostic log time
         self._dbg_fit = None          # fitted curve polyline, for markers
+        self._dbg_n = 0               # points in the fit window
+        self._dbg_r = None            # fitted radius, None = straight
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -129,7 +134,14 @@ class ContourFollower(Node):
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.active_pub = self.create_publisher(Bool, 'cleaning_active', latched)
         self.state_pub = self.create_publisher(String, '~/state', 10)
-        self.marker_pub = self.create_publisher(MarkerArray, '~/debug_markers', 5)
+        # Markers go out TRANSIENT_LOCAL: RViz's marker display (and Foxglove)
+        # default to asking for it, and a VOLATILE publisher is silently
+        # incompatible -- the subscriber connects and simply never draws.
+        self.marker_pub = self.create_publisher(
+            MarkerArray, '~/debug_markers',
+            QoSProfile(depth=5, history=QoSHistoryPolicy.KEEP_LAST,
+                       reliability=QoSReliabilityPolicy.RELIABLE,
+                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
         self.err_d_pub = self.create_publisher(Float32, '~/standoff_err_m', 10)
         self.err_b_pub = self.create_publisher(Float32, '~/bearing_err_deg', 10)
         self.err_h_pub = self.create_publisher(Float32, '~/heading_err_deg', 10)
@@ -244,7 +256,8 @@ class ContourFollower(Node):
             if seed_r is None or r < seed_r:
                 seed, seed_r = i, r
         if seed is None:
-            self._dbg_d = self._dbg_b = self._dbg_fit = None
+            self._dbg_d = self._dbg_b = self._dbg_fit = self._dbg_r = None
+            self._dbg_n = 0
             return None, None, 0
 
         # Grow the contiguous surface either way from the seed, breaking at a
@@ -284,11 +297,15 @@ class ContourFollower(Node):
                 bear = math.atan2(sg * c, sg * b_)
                 self._dbg_d, self._dbg_b = dist, bear
                 self._dbg_fit = [self._project(p, a, b_, c, d)
-                                 for p in sel[::max(1, len(sel) // 12)]]
+                                 for p in sel[::max(1, len(sel) // 20)]]
+                self._dbg_n = len(sel)
+                self._dbg_r = (math.sqrt(disc) / (2.0 * abs(a))
+                               if abs(a) > 1e-6 else None)
                 return dist, bear, len(sel)
 
         self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
-        self._dbg_fit = None
+        self._dbg_fit = self._dbg_r = None
+        self._dbg_n = len(sel)
         return seed_r, pts[seed][3], len(sel)
 
     @staticmethod
@@ -415,7 +432,7 @@ class ContourFollower(Node):
 
     def _pub_markers(self, b_ref, smin, smax) -> None:
         """
-        Draw the pick, the standoff target and the sector, for tuning.
+        Draw the fitted curve, the pick, the standoff target and the sector.
 
         Everything is in the scan frame, so the raw (un-mirrored) bearing is
         side * the follow-side bearing the controller works in.
@@ -447,6 +464,7 @@ class ContourFollower(Node):
         tgt.pose.position = self._pt(self._p('standoff_m'), s * b_ref)
         arr.markers.append(tgt)
         if self._dbg_fit is not None:
+            # The fitted curve, lifted clear of the scan so it reads on top.
             fit = self._mk(5, Marker.LINE_STRIP, stamp)
             fit.scale.x = 0.012
             fit.color.r = 1.0
@@ -454,9 +472,20 @@ class ContourFollower(Node):
             fit.color.a = 0.9
             for px, py in self._dbg_fit:
                 p = Point()
-                p.x, p.y, p.z = px, s * py, 0.0
+                p.x, p.y, p.z = px, s * py, 0.03
                 fit.points.append(p)
             arr.markers.append(fit)
+            # Its endpoints: the extent of the window the fit actually used.
+            ends = self._mk(6, Marker.SPHERE_LIST, stamp)
+            ends.scale.x = ends.scale.y = ends.scale.z = 0.03
+            ends.color.r = 1.0
+            ends.color.b = 1.0
+            ends.color.a = 0.9
+            for px, py in (self._dbg_fit[0], self._dbg_fit[-1]):
+                p = Point()
+                p.x, p.y, p.z = px, s * py, 0.03
+                ends.points.append(p)
+            arr.markers.append(ends)
         sec = self._mk(3, Marker.LINE_LIST, stamp)
         sec.scale.x = 0.006
         sec.color.r = 1.0
@@ -473,8 +502,14 @@ class ContourFollower(Node):
         txt.color.a = 0.9
         txt.pose.position = self._pt(0.0, 0.0, 0.35)
         shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
-        txt.text = '%s  d=%s  target=%.2f' % (
-            self.state, shown, self._p('standoff_m'))
+        if self._dbg_fit is None:
+            fit_txt = 'no fit (%d pts)' % self._dbg_n
+        elif self._dbg_r is None or self._dbg_r > FLAT_RADIUS_M:
+            fit_txt = 'fit %d pts, straight' % self._dbg_n
+        else:
+            fit_txt = 'fit %d pts, R=%.2f' % (self._dbg_n, self._dbg_r)
+        txt.text = '%s  d=%s  target=%.2f\n%s' % (
+            self.state, shown, self._p('standoff_m'), fit_txt)
         arr.markers.append(txt)
         self.marker_pub.publish(arr)
 
