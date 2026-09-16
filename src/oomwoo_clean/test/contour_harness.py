@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+# Copyright 2026 OOMWOO
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Closed-loop 2D test harness for the contour follower -- the torture rig.
+
+Runs the REAL boundary estimator and the REAL control law against a kinematic
+robot and a ray-traced LiDAR, with no ROS, no Gazebo and no rendering, so a
+40-second scenario finishes in a couple of seconds and can gate CI. Gazebo stays
+the authority on everything this deliberately leaves out -- the bookshelf lip
+below the scan plane, carpet, wheel slip, real timing -- but every question of
+the form "does the control law survive this shape" gets answered here first, in
+seconds, repeatably, with a number attached.
+
+Worth having because the alternative is eyeballing RViz: a curvature
+feed-forward that looked obviously right was measured here to drive the robot
+from a 0.178 m clearance around a table leg down to 0.048 m, in about a minute.
+
+Scenes are lists of segments and circles. The robot is a unicycle of
+BODY_RADIUS_M with the LiDAR mounted LIDAR_OFFSET_M ahead of the wheel axle,
+matching oomwoo-one, because that offset is exactly what makes a naive
+curvature correction misbehave.
+
+Run it directly for the scenario table:
+
+    python3 src/oomwoo_clean/test/contour_harness.py
+"""
+
+import math
+import random
+
+BODY_RADIUS_M = 0.1745      # oomwoo-one body, base_diameter/2
+LIDAR_OFFSET_M = 0.0745     # LiDAR ahead of the wheel axle
+BEAMS = 360
+RANGE_SIGMA_M = 0.01        # matches the sim LiDAR's noise
+RANGE_MIN_M = 0.1
+SCAN_HZ = 10.0
+
+
+def segment(p0, p1):
+    """Build a wall segment, as ((x0, y0), (x1, y1))."""
+    return (p0, p1)
+
+
+def circle(centre, radius):
+    """Build a round obstacle (a table or chair leg)."""
+    return (centre, radius)
+
+
+def box(cx, cy, half):
+    """Build a square obstacle's four walls, centred at (cx, cy)."""
+    c = [(cx - half, cy - half), (cx + half, cy - half),
+         (cx + half, cy + half), (cx - half, cy + half)]
+    return [segment(c[i], c[(i + 1) % 4]) for i in range(4)]
+
+
+def _ray(segs, circs, ang):
+    """Range along a ray from the origin at bearing ang; inf if it hits nothing."""
+    c, s = math.cos(ang), math.sin(ang)
+    best = float('inf')
+    for (x0, y0), (x1, y1) in segs:
+        dx, dy = x1 - x0, y1 - y0
+        den = c * dy - s * dx
+        if abs(den) < 1e-12:
+            continue
+        t = (x0 * dy - y0 * dx) / den          # along the ray
+        u = (x0 * s - y0 * c) / den            # along the segment
+        if t > 0.0 and 0.0 <= u <= 1.0:
+            best = min(best, t)
+    for (cx, cy), r in circs:
+        b = cx * c + cy * s
+        disc = b * b - (cx * cx + cy * cy - r * r)
+        if disc < 0.0:
+            continue
+        t = b - math.sqrt(disc)
+        if t > 0.0:
+            best = min(best, t)
+    return best
+
+
+def scan(segs, circs, sigma=RANGE_SIGMA_M):
+    """Ray-trace one noisy LaserScan's worth of ranges, robot at the origin."""
+    inc = 2.0 * math.pi / BEAMS
+    out = []
+    for i in range(BEAMS):
+        r = _ray(segs, circs, -math.pi + i * inc)
+        out.append(r + random.gauss(0.0, sigma) if math.isfinite(r) else r)
+    return out
+
+
+def to_robot(world, x, y, th):
+    """Express a world (segments, circles) in the robot's frame."""
+    c, s = math.cos(-th), math.sin(-th)
+
+    def rot(px, py):
+        px, py = px - x, py - y
+        return (px * c - py * s, px * s + py * c)
+
+    segs = [(rot(*p0), rot(*p1)) for p0, p1 in world[0]]
+    circs = [(rot(*ctr), r) for ctr, r in world[1]]
+    return segs, circs
+
+
+def clearance(world, x, y):
+    """Distance from a point to the nearest surface in the world."""
+    best = float('inf')
+    for (x0, y0), (x1, y1) in world[0]:
+        dx, dy = x1 - x0, y1 - y0
+        den = dx * dx + dy * dy or 1e-12
+        t = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / den))
+        best = min(best, math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)))
+    for (cx, cy), r in world[1]:
+        best = min(best, abs(math.hypot(x - cx, y - cy) - r))
+    return best
+
+
+def make_follower(**overrides):
+    """Build a ContourFollower with no ROS behind it, for offline stepping."""
+    from oomwoo_clean.contour_follower_node import ContourFollower, DEFAULTS
+    params = dict(DEFAULTS)
+    params.update(overrides)
+    node = ContourFollower.__new__(ContourFollower)
+    node.side = -1.0 if params['follow_side'] == 'left' else 1.0
+    node._p = params.get
+    node._dbg_d = node._dbg_b = node._dbg_fit = node._dbg_r = None
+    node._dbg_n = 0
+    return node, params
+
+
+class Scan:
+    """The few LaserScan fields the estimator reads."""
+
+    def __init__(self, ranges):
+        """Wrap a list of ranges as the estimator's view of a scan."""
+        self.ranges = ranges
+        self.angle_min = -math.pi
+        self.angle_increment = 2.0 * math.pi / BEAMS
+        self.range_min = RANGE_MIN_M
+
+
+def run(world, start, seconds=40.0, seed=0, **overrides):
+    """
+    Drive the follower around a world; return a metrics dict.
+
+    start is (x, y, heading). Metrics: min_clearance (body centre to the nearest
+    surface -- below BODY_RADIUS_M means it hit something), standoff error mean
+    and max, bearing_lag (steady-state droop, degrees), laps (net turning / 360)
+    and lost_frames.
+    """
+    node, params = make_follower(**overrides)
+    x, y, th = start
+    dt = 1.0 / SCAN_HZ
+    random.seed(seed)
+    smin = math.radians(params['sector_min_deg'])
+    smax = math.radians(params['sector_max_deg'])
+    b_ref = math.radians(params['bearing_ref_deg'])
+    errs, lags = [], []
+    min_clear, turned, lost = float('inf'), 0.0, 0
+    for _ in range(int(seconds * SCAN_HZ)):
+        lx = x + LIDAR_OFFSET_M * math.cos(th)
+        ly = y + LIDAR_OFFSET_M * math.sin(th)
+        segs, circs = to_robot(world, lx, ly, th)
+        d, b, _n = node._boundary(Scan(scan(segs, circs)), smin, smax,
+                                  params['max_follow_range_m'])
+        if d is None:
+            lost += 1
+            v = params['v_min']
+            w = -params['v_nominal'] / params['convex_arc_radius_m']
+        else:
+            e_d = d - params['standoff_m']
+            e_b = b - b_ref
+            a_max = math.radians(params['alpha_max_deg'])
+            alpha = max(-a_max, min(a_max, params['k_approach'] * e_d))
+            e_h = alpha - e_b
+            w = max(-params['omega_max'],
+                    min(params['omega_max'], -params['k_heading'] * e_h))
+            slow = math.radians(params['slow_angle_deg'])
+            v = params['v_nominal'] * (1.0 - min(1.0, abs(e_h) / slow))
+            v = max(params['v_min'], v)
+            errs.append(e_d)
+            lags.append(math.degrees(e_b))
+        w_out = node.side * w
+        x += v * math.cos(th) * dt
+        y += v * math.sin(th) * dt
+        th += w_out * dt
+        turned += w_out * dt
+        min_clear = min(min_clear, clearance(world, x, y))
+    n = max(1, len(errs))
+    return {
+        'min_clearance': min_clear,
+        'hit': min_clear < BODY_RADIUS_M,
+        'standoff_mean': sum(abs(e) for e in errs) / n,
+        'standoff_max': max((abs(e) for e in errs), default=0.0),
+        'bearing_lag': sum(lags) / n,
+        'laps': abs(math.degrees(turned)) / 360.0,
+        'lost_frames': lost,
+    }
+
+
+ROOM = ([segment((-2.0, -2.0), (2.0, -2.0)), segment((2.0, -2.0), (2.0, 2.0)),
+         segment((2.0, 2.0), (-2.0, 2.0)), segment((-2.0, 2.0), (-2.0, -2.0))], [])
+
+SCENARIOS = {
+    # name: (world, start pose)
+    'room': (ROOM, (-1.5, -1.8, 0.0)),
+    'box': ((box(0.0, 0.0, 0.3), []), (-0.9, -0.5, 0.0)),
+    'table_leg_2cm': (([], [circle((0.0, 0.0), 0.02)]), (-0.22, 0.0, math.pi / 2)),
+    'table_leg_5cm': (([], [circle((0.0, 0.0), 0.05)]), (-0.25, 0.0, math.pi / 2)),
+    'leg_by_wall': (([segment((-2.0, -0.6), (2.0, -0.6))],
+                     [circle((0.4, -0.42), 0.02)]), (-1.2, -0.4, 0.0)),
+    # Long enough that a 30 s run never reaches the wall's end -- the tip is a
+    # separate scenario, so a corridor failure means a corridor problem.
+    'corridor': (([segment((-4.0, -0.6), (6.0, -0.6)),
+                   segment((-0.4, 0.0), (1.2, 0.0))], []), (-1.4, -0.4, 0.0)),
+    # The tightest convex turn there is: the bare END of a wall, which the
+    # follower has to wrap 180 degrees around. Currently grazes -- see
+    # test_wrapping_a_wall_end_grazes_it.
+    'wall_end': (([segment((-2.0, -0.6), (0.4, -0.6))], []), (-1.2, -0.4, 0.0)),
+}
+
+
+def main():
+    """Run every scenario and print the table."""
+    print('%-16s %10s %6s %10s %8s %6s %6s'
+          % ('scenario', 'min clear', 'hit?', 'stand err', 'lag deg', 'laps', 'lost'))
+    for name in sorted(SCENARIOS):
+        world, start = SCENARIOS[name]
+        m = run(world, start, seconds=40.0, seed=1)
+        print('%-16s %9.3fm %6s %9.3fm %8.1f %6.1f %6d'
+              % (name, m['min_clearance'], 'HIT' if m['hit'] else 'ok',
+                 m['standoff_mean'], m['bearing_lag'], m['laps'],
+                 m['lost_frames']))
+
+
+if __name__ == '__main__':
+    main()
