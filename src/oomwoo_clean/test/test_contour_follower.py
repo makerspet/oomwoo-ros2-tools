@@ -155,30 +155,48 @@ def test_orbiting_a_leg_keeps_its_distance(name):
     assert m['laps'] > 0.5, 'expected it to circle the leg, got %.1f laps' % m['laps']
 
 
-@pytest.mark.xfail(reason='known: no clearance margin at a sharp convex '
-                          'corner -- needs a control fix, not a threshold')
 @pytest.mark.parametrize('name', ['wall_end', 'box'])
-def test_sharp_convex_corners_have_no_clearance_margin(name):
+def test_sharp_convex_corners_keep_clearance(name):
     """
-    Wrapping a sharp convex corner, the shell grazes what the LiDAR clears.
+    Wrapping a sharp convex corner, the shell must clear what the LiDAR clears.
 
-    Measured over 40 s: the bare end of a wall brings the body centre to
-    0.169 m and a box corner to 0.174 m, against a 0.1745 m body radius. The
-    box case is half a millimetre over the line -- which is the finding, not a
-    tolerance to widen: there is NO margin at a sharp convex corner, and which
-    side of contact a run lands on is luck. It matches the table-leg collision
-    seen in Gazebo.
-
-    The cause is that the follower servos the LIDAR's range to the surface, and
-    the LiDAR sits 0.0745 m ahead of the wheel axle. Rounding a tight convex
-    corner the body swings wide of where the LiDAR points, so a correct 0.20 m
-    LiDAR standoff still lets the shell graze. Holding the BODY's clearance
-    instead -- the distance from the body centre to the fitted curve, which the
-    fitted conic can be evaluated at directly, no extra sensing needed -- is the
-    fix this xfail is waiting for. A curvature feed-forward was tried first and
-    measured worse (0.048 m), so it is not that.
+    This was an xfail until the follower started measuring its standoff at the
+    body centre. Servoing the raw LiDAR range, a wall's bare end brought the
+    body centre to 0.169 m and a box corner to 0.174 m against a 0.1745 m body
+    radius -- contact, and the same failure as the table-leg collision seen in
+    Gazebo. Measuring the same 0.20 m at the body centre gives 0.181 m and
+    0.180 m, at no cost in distance covered.
     """
     world, start = harness.SCENARIOS[name]
     m = harness.run(world, start, seconds=40.0, seed=1)
     assert not m['hit'], '%s: min clearance %.3f m (body radius %.4f)' % (
         name, m['min_clearance'], harness.BODY_RADIUS_M)
+
+
+def test_body_measure_equals_lidar_measure_when_parallel():
+    """
+    Running parallel to a wall the two measures agree; angled, they must not.
+
+    This is the invariant that keeps the change from altering wall following:
+    the body centre is directly behind the LiDAR, so when the surface is abeam
+    both sit the same distance from it. The measures separate only when the
+    robot is angled or turning, which is exactly where the shell was grazing.
+    """
+    node, params = harness.make_follower()
+    off = params['body_offset_m']
+    for normal_deg, expected_delta in ((-90.0, 0.0),
+                                       (-110.0, off * math.cos(math.radians(-110.0))),
+                                       (-70.0, off * math.cos(math.radians(-70.0)))):
+        nrm = math.radians(normal_deg)
+        nx, ny = math.cos(nrm), math.sin(nrm)
+        mid = (0.20 * nx, 0.20 * ny)
+        tan = (-ny, nx)
+        world = ([harness.segment((mid[0] - 1.5 * tan[0], mid[1] - 1.5 * tan[1]),
+                                  (mid[0] + 1.5 * tan[0], mid[1] + 1.5 * tan[1]))], [])
+        random.seed(5)
+        d_ctrl, _b, _n = node._boundary(harness.Scan(harness.scan(*world)),
+                                        SMIN, SMAX, params['max_follow_range_m'])
+        # _dbg_d stays the raw LiDAR range; the returned value is what is servoed
+        assert abs((d_ctrl - node._dbg_d) - expected_delta) < 0.01, (
+            'normal %.0f deg: body-lidar delta %.3f, expected %.3f'
+            % (normal_deg, d_ctrl - node._dbg_d, expected_delta))

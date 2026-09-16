@@ -62,7 +62,16 @@ circles it keeping it on the right. Frame: 0° = forward, −90° = right, CCW +
   not a far background wall.
 
 ### 3.2 Two error terms
-- **Standoff error** `e_d = d_min − standoff` (positive = too far from the obstacle).
+- **Standoff error** `e_d = d_body − standoff` (positive = too far from the obstacle),
+  where `d_body` is the distance from the **body centre** to the fitted curve, not
+  the LiDAR's range. The LiDAR sits `body_offset_m` (0.0745 m) ahead of the wheel
+  axle, so in a turn the shell swings wide of where the LiDAR points. Servoing the
+  raw range measured 0.169 m at a wall's tip and 0.174 m at a box corner against a
+  0.1745 m body radius — contact. The fitted conic is just a curve in the scan
+  frame, so the body centre is another point to evaluate it at; with no fit, the
+  seed beam is treated as perpendicular, giving `d + offset·cos(bearing)`. Running
+  parallel to a wall the two measures are identical, so wall following is unchanged
+  by construction; they separate only in turns, which is where the grazing was.
 - **Bearing error** `e_β = β_min − β_ref`, with `β_ref = −90°` (abeam) for a
   tangent path; a small forward lead may be added.
 

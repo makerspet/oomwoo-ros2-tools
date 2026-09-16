@@ -19,7 +19,10 @@ The proactive, any-shape generalization of the bumper-based wall_clean. Off the
 LiDAR it isolates the followed surface in a forward-biased sector on the follow
 side (default right), FITS A CIRCLE to a short window of it, and servos two
 errors -- the distance to the fitted curve and the bearing of its nearest point
-(want it abeam, -90 deg). Fitting a curve rather than trusting the single nearest
+(want it abeam, -90 deg). That distance is measured at the BODY CENTRE rather
+than at the LiDAR, which is mounted ahead of the wheel axle: in a turn the shell
+swings wide of where the LiDAR points, so servoing the raw range grazed tight
+convex corners. Fitting a curve rather than trusting the single nearest
 beam takes the noise out of the steering; keeping the window short keeps the
 estimate local, so it follows any shape -- straight wall, round stool leg or
 CONCAVE inside corner -- without smearing one into the next. CONVEX outside corners
@@ -71,7 +74,9 @@ FLAT_RADIUS_M = 2.0
 
 DEFAULTS = {
     'follow_side': 'right',        # 'right' or 'left'
-    'standoff_m': 0.20,            # perpendicular LiDAR-to-boundary target
+    'standoff_m': 0.20,            # perpendicular robot-to-boundary target
+    'body_offset_m': 0.0745,       # LiDAR ahead of the wheel axle; = URDF lidar_center_offset
+    'use_body_clearance': True,    # measure the standoff at the body centre, not the LiDAR
     'v_nominal': 0.15,             # m/s cruise
     'v_min': 0.05,                 # m/s floor (in corners)
     'sector_min_deg': -170.0,      # follow-side + forward window (right-follow)
@@ -127,6 +132,7 @@ class ContourFollower(Node):
         self._t_log = None            # last diagnostic log time
         self._dbg_fit = None          # fitted curve polyline, for markers
         self._dbg_n = 0               # points in the fit window
+        self._dbg_body = None         # body-centre distance to the fitted curve
         self._dbg_r = None            # fitted radius, None = straight
 
         latched = QoSProfile(
@@ -259,6 +265,7 @@ class ContourFollower(Node):
                 seed, seed_r = i, r
         if seed is None:
             self._dbg_d = self._dbg_b = self._dbg_fit = self._dbg_r = None
+            self._dbg_body = None
             self._dbg_n = 0
             return None, None, 0
 
@@ -320,12 +327,50 @@ class ContourFollower(Node):
                     self._dbg_r = (
                         math.copysign(math.sqrt(disc) / (2.0 * abs(a)), d * a)
                         if abs(a) > 1e-6 else None)
+                    self._dbg_body = self._body_distance((a, b_, c, d), dist, bear)
+                    if self._p('use_body_clearance'):
+                        return self._dbg_body, bear, len(sel)
                     return dist, bear, len(sel)
 
         self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
         self._dbg_fit = self._dbg_r = None
         self._dbg_n = len(sel)
+        self._dbg_body = self._body_distance(None, seed_r, pts[seed][3])
+        if self._p('use_body_clearance'):
+            return self._dbg_body, pts[seed][3], len(sel)
         return seed_r, pts[seed][3], len(sel)
+
+    def _body_distance(self, co, d_lidar, bear):
+        """
+        Distance from the BODY CENTRE to the fitted curve.
+
+        The follower's job is to keep the SHELL off the furniture, but the
+        LiDAR sits body_offset_m ahead of the wheel axle, so on a tight turn
+        the body swings wide of wherever the LiDAR is pointing and grazes what
+        the LiDAR clears. Measured on the test harness, servoing the LiDAR's
+        range put the body centre 0.169 m from a wall's tip and 0.174 m from a
+        box corner against a 0.1745 m body radius -- i.e. contact.
+
+        The fitted conic is a curve in the scan frame, so the body centre is
+        just another point to evaluate it at: translate the coefficients to
+        p = (-offset, 0) and reuse the same rationalized distance. With no fit
+        to evaluate, fall back to treating the seed beam as perpendicular to
+        the surface, which gives d + offset*cos(bearing): identical to the
+        LiDAR range when running parallel, and correctly SMALLER when angled in.
+        """
+        off = self._p('body_offset_m')
+        if co is None:
+            return d_lidar + off * math.cos(bear)
+        a, b, c, d = co
+        px = -off
+        dp = a * px * px + b * px + d
+        bp = 2.0 * a * px + b
+        cp = c
+        grad = math.hypot(bp, cp)
+        if grad < 1e-9:
+            return d_lidar + off * math.cos(bear)
+        disc = max(0.0, bp * bp + cp * cp - 4.0 * a * dp)
+        return 2.0 * abs(dp) / (grad + math.sqrt(disc))
 
     @staticmethod
     def _project(p, a, b, c, d):
@@ -520,7 +565,10 @@ class ContourFollower(Node):
         txt.color.r = txt.color.g = txt.color.b = 1.0
         txt.color.a = 0.9
         txt.pose.position = self._pt(0.0, 0.0, 0.35)
-        shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
+        if self._dbg_body is not None and self._p('use_body_clearance'):
+            shown = '%.2f (lidar %.2f)' % (self._dbg_body, self._dbg_d)
+        else:
+            shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
         if self._dbg_fit is None:
             fit_txt = 'no fit (%d pts)' % self._dbg_n
         elif self._dbg_r is None or abs(self._dbg_r) > FLAT_RADIUS_M:
@@ -542,16 +590,22 @@ class ContourFollower(Node):
         currently angled toward it, how far we WANT it angled (the capped approach
         angle), and the resulting command. If "toward" tracks "want", the loop is
         doing its job and any residual angle is just the approach in progress.
+
+        d is what the controller servos -- by default the BODY centre's distance
+        to the surface -- with the raw LiDAR range beside it in brackets. The two
+        are equal running parallel to a wall and diverge in turns, which is
+        exactly where the robot used to graze.
         """
         now = self.get_clock().now()
         period = Duration(seconds=float(self._p('log_period_s')))
         if self._t_log is not None and (now - self._t_log) < period:
             return
         self._t_log = now
+        lidar_d = '' if self._dbg_d is None else ' (lidar %.2f)' % self._dbg_d
         self.get_logger().info(
-            '%-6s d=%.2fm (target %.2f, err %+.2f)  toward=%+5.1f deg  '
+            '%-6s d=%.2fm%s (target %.2f, err %+.2f)  toward=%+5.1f deg  '
             'want=%+5.1f  err=%+5.1f  ->  v=%.2f w=%+.2f'
-            % (self.state, d, self._p('standoff_m'), e_d,
+            % (self.state, d, lidar_d, self._p('standoff_m'), e_d,
                math.degrees(e_b), math.degrees(alpha), math.degrees(e_h),
                v, omega))
 
