@@ -24,17 +24,17 @@ the form "does the control law survive this shape" gets answered here first, in
 seconds, repeatably, with a number attached.
 
 Worth having because the alternative is eyeballing RViz: a curvature
-feed-forward that looked obviously right was measured here to drive the robot
-from a 0.178 m clearance around a table leg down to 0.048 m, in about a minute.
+feed-forward that looked obviously right was measured here to drive the robot's
+clearance around a table leg down from 0.178 m to 0.048 m, in about a minute.
 
 Scenes are lists of segments and circles. The robot is a unicycle of
 BODY_RADIUS_M with the LiDAR mounted LIDAR_OFFSET_M ahead of the wheel axle,
 matching oomwoo-one, because that offset is exactly what makes a naive
 curvature correction misbehave.
 
-Run it directly for the scenario table:
+Run it for the scenario table:
 
-    python3 src/oomwoo_clean/test/contour_harness.py
+    python3 -m oomwoo_clean.contour_harness
 """
 
 import math

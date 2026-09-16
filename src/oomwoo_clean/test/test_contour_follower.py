@@ -23,7 +23,7 @@ to the bound it says so, because that is a finding rather than a passing test.
 import math
 import random
 
-import contour_harness as harness
+from oomwoo_clean import contour_harness as harness
 
 import pytest
 
