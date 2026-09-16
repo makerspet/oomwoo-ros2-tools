@@ -80,6 +80,8 @@ DEFAULTS = {
     'fit_gap_m': 0.10,             # max step between adjacent points on one surface
     'fit_window_m': 0.15,          # fit only this far either way from the nearest point
     'min_fit_points': 6,           # below this, fall back to the nearest beam
+    'fit_max_dev_m': 0.05,         # fit vs nearest beam: distance disagreement cap
+    'fit_max_dev_deg': 35.0,       # fit vs nearest beam: bearing disagreement cap
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -295,13 +297,30 @@ class ContourFollower(Node):
                 dist = 2.0 * abs(d) / (grad + math.sqrt(disc))
                 sg = -1.0 if d > 0.0 else 1.0
                 bear = math.atan2(sg * c, sg * b_)
-                self._dbg_d, self._dbg_b = dist, bear
-                self._dbg_fit = [self._project(p, a, b_, c, d)
-                                 for p in sel[::max(1, len(sel) // 20)]]
-                self._dbg_n = len(sel)
-                self._dbg_r = (math.sqrt(disc) / (2.0 * abs(a))
-                               if abs(a) > 1e-6 else None)
-                return dist, bear, len(sel)
+                # Sanity-check the fit against the beam that seeded it. On a
+                # short arc -- a table leg is ~15 beams -- the algebraic fit can
+                # occasionally converge to a tiny circle placed nowhere near the
+                # surface: measured at 0.2-1% of frames on a 2 cm leg, once
+                # reporting d=0.06 m at a bearing BEHIND the robot. One bad frame
+                # commands a full-rate turn, so reject a fit that disagrees with
+                # the raw nearest beam and use the beam instead. It never fires
+                # on walls, corners or large curves.
+                if (abs(dist - seed_r) <= self._p('fit_max_dev_m')
+                        and abs(math.remainder(bear - pts[seed][3], TWO_PI))
+                        <= math.radians(self._p('fit_max_dev_deg'))):
+                    self._dbg_d, self._dbg_b = dist, bear
+                    self._dbg_fit = [self._project(p, a, b_, c, d)
+                                     for p in sel[::max(1, len(sel) // 20)]]
+                    self._dbg_n = len(sel)
+                    # Signed radius: + = the surface curves AWAY from the
+                    # robot (convex, a table leg), - = it wraps around the robot
+                    # (concave, an inside corner). The robot lies outside the
+                    # fitted circle exactly when D/A > 0, since
+                    # |centre|^2 - R^2 = D/A.
+                    self._dbg_r = (
+                        math.copysign(math.sqrt(disc) / (2.0 * abs(a)), d * a)
+                        if abs(a) > 1e-6 else None)
+                    return dist, bear, len(sel)
 
         self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
         self._dbg_fit = self._dbg_r = None
@@ -504,10 +523,12 @@ class ContourFollower(Node):
         shown = '--' if self._dbg_d is None else '%.2f' % self._dbg_d
         if self._dbg_fit is None:
             fit_txt = 'no fit (%d pts)' % self._dbg_n
-        elif self._dbg_r is None or self._dbg_r > FLAT_RADIUS_M:
+        elif self._dbg_r is None or abs(self._dbg_r) > FLAT_RADIUS_M:
             fit_txt = 'fit %d pts, straight' % self._dbg_n
         else:
-            fit_txt = 'fit %d pts, R=%.2f' % (self._dbg_n, self._dbg_r)
+            fit_txt = 'fit %d pts, R=%.2f (%s)' % (
+                self._dbg_n, abs(self._dbg_r),
+                'convex' if self._dbg_r > 0.0 else 'concave')
         txt.text = '%s  d=%s  target=%.2f\n%s' % (
             self.state, shown, self._p('standoff_m'), fit_txt)
         arr.markers.append(txt)
