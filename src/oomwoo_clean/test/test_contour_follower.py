@@ -163,12 +163,13 @@ def test_sharp_convex_corners_keep_clearance(name):
     """
     Wrapping a sharp convex corner, the shell must clear what the LiDAR clears.
 
-    This was an xfail until the follower started measuring its standoff at the
-    body centre. Servoing the raw LiDAR range, a wall's bare end brought the
-    body centre to 0.169 m and a box corner to 0.174 m against a 0.1745 m body
-    radius -- contact, and the same failure as the table-leg collision seen in
-    Gazebo. Measuring the same 0.20 m at the body centre gives 0.181 m and
-    0.180 m, at no cost in distance covered.
+    Two fixes got this passing, and the second corrected the first. Servoing the
+    raw LiDAR range, a wall's bare end brought the body centre to 0.169 m and a
+    box corner to 0.174 m. Measuring the standoff at the body centre raised those
+    to 0.181 m and 0.180 m -- which was scored as clear against the 0.1745 m body
+    radius, but the bumper reaches 0.1814 m, so both were still contacts, and a
+    Gazebo run duly halted on one. Raising the standoff from 0.20 m to 0.23 m
+    gives 0.224 m and 0.210 m, at least 29 mm clear of the bumper.
     """
     world, start = harness.SCENARIOS[name]
     m = harness.run(world, start, seconds=40.0, seed=1)

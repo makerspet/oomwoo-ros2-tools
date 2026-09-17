@@ -124,9 +124,16 @@ the robot onto that angle:
      its rightmost point is 0.1745 m off center, so `standoff > 0.1745 + gap`.
   3. The **side brush** (extends a few cm past the body) should reach the edge
      strip.
-- **Starting value:** `standoff ≈ 0.20–0.22 m` → ~3–5 cm body-to-wall gap with the
-  side brush reaching in. Tune in sim so one lap cleans the edge strip without the
-  body scraping.
+- **Value: 0.23 m.** What touches first is not the body but the bumper, a ring of
+  10 mm facets centred on the body radius whose corners reach **0.1814 m**. At the
+  original 0.20 m that left under 2 cm, and a Gazebo run halted on a bump just
+  after a concave corner with the body centre 0.18 m from the wall. Swept on the
+  test harness (worst margin to the bumper, across room, box, wall end, legs,
+  corridor): 0.20 m → **−1.1 mm, two contacts**; 0.21 → +6.8; 0.22 → +19.9;
+  **0.23 → +28.9 mm**; 0.24 → +37.2. Gazebo dipped ~13 mm deeper than the harness
+  at that corner, so 0.23 is the smallest value with real headroom. It costs edge
+  cleaning — a 5.5 cm body-to-wall gap instead of 2.5 cm — which the side brush
+  has to cover.
 - The **forward LiDAR** (mounted +0.0745 m) doesn't change straight-wall standoff,
   but its abeam/forward reading is taken ahead of center → natural look-ahead on
   the followed side, so a convex corner enters the sector sooner. That head start

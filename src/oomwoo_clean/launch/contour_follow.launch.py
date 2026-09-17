@@ -44,7 +44,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('follow_side', default_value='right'),
-        DeclareLaunchArgument('standoff_m', default_value='0.20'),
+        DeclareLaunchArgument('standoff_m', default_value='0.23'),
         Node(
             package='oomwoo_clean', executable='contour_follower',
             name='contour_follower', output='screen',

@@ -41,6 +41,12 @@ import math
 import random
 
 BODY_RADIUS_M = 0.1745      # oomwoo-one body, base_diameter/2
+# What actually touches first: the bumper is a ring of 10 mm-thick flat facets
+# centred ON the body radius, so its outer face stands 5 mm proud, and each
+# facet's corners (1.15x the arc chord wide) reach further still. A Gazebo run
+# halted on a bump with the body centre 0.18 m from the wall, which the body
+# radius alone called a clear pass.
+CONTACT_RADIUS_M = 0.1814
 LIDAR_OFFSET_M = 0.0745     # LiDAR ahead of the wheel axle
 BEAMS = 360
 RANGE_SIGMA_M = 0.01        # matches the sim LiDAR's noise
@@ -149,14 +155,18 @@ class Scan:
         self.range_min = RANGE_MIN_M
 
 
-def run(world, start, seconds=40.0, seed=0, **overrides):
+def run(world, start, seconds=40.0, seed=0, settle_s=5.0, **overrides):
     """
     Drive the follower around a world; return a metrics dict.
 
     start is (x, y, heading). Metrics: min_clearance (body centre to the nearest
-    surface -- below BODY_RADIUS_M means it hit something), standoff error mean
+    surface -- below CONTACT_RADIUS_M means the bumper touched something), standoff error mean
     and max, bearing_lag (steady-state droop, degrees), laps (net turning / 360)
     and lost_frames.
+
+    Clearance is scored only after settle_s: every scenario starts the robot a
+    fixed distance off its wall, and without the settle window that start pose,
+    not the follower, sets the minimum for any standoff above it.
     """
     node, params = make_follower(**overrides)
     x, y, th = start
@@ -167,7 +177,7 @@ def run(world, start, seconds=40.0, seed=0, **overrides):
     b_ref = math.radians(params['bearing_ref_deg'])
     errs, lags = [], []
     min_clear, turned, lost = float('inf'), 0.0, 0
-    for _ in range(int(seconds * SCAN_HZ)):
+    for step in range(int(seconds * SCAN_HZ)):
         lx = x + LIDAR_OFFSET_M * math.cos(th)
         ly = y + LIDAR_OFFSET_M * math.sin(th)
         segs, circs = to_robot(world, lx, ly, th)
@@ -195,11 +205,12 @@ def run(world, start, seconds=40.0, seed=0, **overrides):
         y += v * math.sin(th) * dt
         th += w_out * dt
         turned += w_out * dt
-        min_clear = min(min_clear, clearance(world, x, y))
+        if step * dt >= settle_s:
+            min_clear = min(min_clear, clearance(world, x, y))
     n = max(1, len(errs))
     return {
         'min_clearance': min_clear,
-        'hit': min_clear < BODY_RADIUS_M,
+        'hit': min_clear < CONTACT_RADIUS_M,
         'standoff_mean': sum(abs(e) for e in errs) / n,
         'standoff_max': max((abs(e) for e in errs), default=0.0),
         'bearing_lag': sum(lags) / n,
@@ -227,13 +238,17 @@ SCENARIOS = {
     # follower has to wrap 180 degrees around. Currently grazes -- see
     # test_wrapping_a_wall_end_grazes_it.
     'wall_end': (([segment((-2.0, -0.6), (0.4, -0.6))], []), (-1.2, -0.4, 0.0)),
-    # Something standing IN the path, 10 cm left of the centreline, while the
-    # followed wall stays nearer. The follower only steers on the nearest
-    # surface, so the post is ignored until it swings out of the search sector
-    # -- then it is never seen at all. The torture-course panel and the second
-    # table leg in Gazebo were both this. Needs a front guard.
+    # Something standing IN the path while the followed wall stays nearer. The
+    # follower only steers on the nearest surface, so the post is ignored until
+    # it swings out of the search sector, and then it is never seen at all. The
+    # torture-course panel and the second table leg in Gazebo were both this.
+    # Placement is what makes it a test: the default standoff puts the path at
+    # y = -0.37, and the post sits 0.12 m left of that -- inside the bumper's
+    # 0.18 m half-width, but far enough out that by the time it is as near as
+    # the wall (0.23 m) it is at +31 deg, past the sector's +20 deg edge.
+    # Needs a front guard.
     'post_in_path': (([segment((-2.0, -0.6), (2.0, -0.6))],
-                      [circle((0.3, -0.30), 0.02)]), (-1.2, -0.4, 0.0)),
+                      [circle((0.3, -0.25), 0.02)]), (-1.2, -0.37, 0.0)),
 }
 
 
