@@ -163,34 +163,37 @@ def test_sharp_convex_corners_keep_clearance(name):
     """
     Wrapping a sharp convex corner, the shell must clear what the LiDAR clears.
 
-    Two fixes got this passing, and the second corrected the first. Servoing the
-    raw LiDAR range, a wall's bare end brought the body centre to 0.169 m and a
-    box corner to 0.174 m. Measuring the standoff at the body centre raised those
-    to 0.181 m and 0.180 m -- which was scored as clear against the 0.1745 m body
-    radius, but the bumper reaches 0.1814 m, so both were still contacts, and a
-    Gazebo run duly halted on one. Raising the standoff from 0.20 m to 0.23 m
-    gives 0.224 m and 0.210 m, at least 29 mm clear of the bumper.
+    Three fixes got this passing, each correcting the last. Servoing the raw
+    LiDAR range, a wall's bare end brought the body centre to 0.169 m and a box
+    corner to 0.174 m. Measuring at the body centre gave 0.181 and 0.180 m, which
+    was scored clear against the 0.1745 m body radius but not against the
+    bumper's 0.1814 m reach, and a Gazebo run duly halted. Raising the standoff
+    to 0.23 m and refusing to report a surface as further away than the nearest
+    scan points now leaves at least 35 mm.
     """
     world, start = harness.SCENARIOS[name]
     m = harness.run(world, start, seconds=40.0, seed=1)
-    assert not m['hit'], '%s: min clearance %.3f m (body radius %.4f)' % (
-        name, m['min_clearance'], harness.BODY_RADIUS_M)
+    assert not m['hit'], '%s: min clearance %.3f m (bumper reach %.4f)' % (
+        name, m['min_clearance'], harness.CONTACT_RADIUS_M)
 
 
-def test_body_measure_equals_lidar_measure_when_parallel():
+def test_body_measure_tracks_the_lidar_measure_when_parallel():
     """
-    Running parallel to a wall the two measures agree; angled, they must not.
+    Parallel to a wall the two measures agree; angled, they differ by the offset.
 
-    This is the invariant that keeps the change from altering wall following:
-    the body centre is directly behind the LiDAR, so when the surface is abeam
-    both sit the same distance from it. The measures separate only when the
-    robot is angled or turning, which is exactly where the shell was grazing.
+    This is the invariant that keeps the body-centre measure from altering plain
+    wall following: the body centre sits directly behind the LiDAR, so with the
+    surface abeam both are the same distance from it. Angled, they separate by
+    offset * cos(bearing) -- the body reads CLOSER when the surface has drifted
+    behind abeam (what happens on every curve, and the case that was grazing
+    corners) and FURTHER when the robot is angled into the wall.
+
+    The point guard only ever subtracts, so each expected value is an upper
+    bound, with about 1.5 cm of slack below it.
     """
     node, params = harness.make_follower()
     off = params['body_offset_m']
-    for normal_deg, expected_delta in ((-90.0, 0.0),
-                                       (-110.0, off * math.cos(math.radians(-110.0))),
-                                       (-70.0, off * math.cos(math.radians(-70.0)))):
+    for normal_deg in (-90.0, -110.0, -70.0):
         nrm = math.radians(normal_deg)
         nx, ny = math.cos(nrm), math.sin(nrm)
         mid = (0.20 * nx, 0.20 * ny)
@@ -200,10 +203,38 @@ def test_body_measure_equals_lidar_measure_when_parallel():
         random.seed(5)
         d_ctrl, _b, _n = node._boundary(harness.Scan(harness.scan(*world)),
                                         SMIN, SMAX, params['max_follow_range_m'])
-        # _dbg_d stays the raw LiDAR range; the returned value is what is servoed
-        assert abs((d_ctrl - node._dbg_d) - expected_delta) < 0.01, (
-            'normal %.0f deg: body-lidar delta %.3f, expected %.3f'
-            % (normal_deg, d_ctrl - node._dbg_d, expected_delta))
+        delta = d_ctrl - node._dbg_d            # _dbg_d stays the raw LiDAR range
+        expected = off * math.cos(nrm)          # the geometry, before the guard
+        assert delta <= expected + 0.005, (
+            'normal %.0f deg: %+.3f m, further than the geometry allows (%+.3f)'
+            % (normal_deg, delta, expected))
+        assert delta >= expected - 0.015, (
+            'normal %.0f deg: %+.3f m, more than the guard should cost (%+.3f)'
+            % (normal_deg, delta, expected))
+
+
+def test_point_guard_stops_the_fit_cutting_a_sharp_corner():
+    """
+    A fitted circle rounds a sharp corner; the corner tip must still be reported.
+
+    Wrapping a box corner the fit reports R ~ 0.08 and, being an arc through a
+    corner that is not one, sits INSIDE the real corner: measured up to +23 mm of
+    optimism around a box and +54 mm in a room's inside corners, which is most of
+    the clearance the standoff buys. A Gazebo run halted on exactly this, with
+    "R=0.08 convex" in the log line. Reporting no further than the 3rd-nearest
+    scan point cures it, because the corner tip is one of the points.
+    """
+    node, params = harness.make_follower()
+    corner = (-0.10, -0.23)                     # ahead-right of the robot
+    faces = ([harness.segment(corner, (2.0, -0.23)),
+              harness.segment(corner, (-0.10, -2.0))], [])
+    bx = -params['body_offset_m']
+    true = min(0.23, math.hypot(bx - corner[0], corner[1]))
+    random.seed(7)
+    worst = max(node._boundary(harness.Scan(harness.scan(*faces)), SMIN, SMAX,
+                               params['max_follow_range_m'])[0] - true
+                for _ in range(30))
+    assert worst < 0.015, 'reports the corner %+.3f m further away than it is' % worst
 
 
 @pytest.mark.xfail(strict=True, reason='known: no front guard -- the follower only '
@@ -212,12 +243,12 @@ def test_obstacle_in_the_path_is_avoided():
     """
     A post in the robot's path, nearer the centreline than the wall, gets hit.
 
-    The follower picks the single nearest surface in its search sector. While
-    the followed wall sits at 0.20 m, a post further ahead is never the nearest,
+    The follower picks the single nearest surface in its search sector. While the
+    followed wall sits at the standoff, a post further ahead is never the nearest,
     however squarely it sits in the path; by the time it would be, it has swung
-    past the sector's +20 deg edge and drops out of view entirely. Measured on
-    the torture course's first version: a panel end in view at +5 deg to +16 deg
-    for five seconds, never picked, hit at +43 deg. Same as the second table leg.
+    past the sector's +20 deg edge and drops out of view entirely. Measured on the
+    torture course's first version: a panel end in view at +5 deg to +16 deg for
+    five seconds, never picked, hit at +43 deg.
 
     Strict, so it flips loudly the day a front guard lands.
     """

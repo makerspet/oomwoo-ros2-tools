@@ -102,6 +102,7 @@ DEFAULTS = {
     'min_fit_points': 6,           # below this, fall back to the nearest beam
     'fit_max_dev_m': 0.05,         # fit vs nearest beam: distance disagreement cap
     'fit_max_dev_deg': 35.0,       # fit vs nearest beam: bearing disagreement cap
+    'point_guard_rank': 3,         # never report further than the Nth-nearest scan point
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -374,17 +375,43 @@ class ContourFollower(Node):
                         math.copysign(math.sqrt(disc) / (2.0 * abs(a)), d * a)
                         if abs(a) > 1e-6 else None)
                     self._dbg_body = self._body_distance((a, b_, c, d), dist, bear)
-                    if self._p('use_body_clearance'):
-                        return self._dbg_body, bear, len(sel)
-                    return dist, bear, len(sel)
+                    reported = (self._dbg_body if self._p('use_body_clearance')
+                                else dist)
+                    guard = self._point_guard(sel, self._p('point_guard_rank'))
+                    self._dbg_body = min(self._dbg_body, guard)
+                    return min(reported, guard), bear, len(sel)
 
         self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
         self._dbg_fit = self._dbg_r = None
         self._dbg_n = len(sel)
         self._dbg_body = self._body_distance(None, seed_r, pts[seed][3])
-        if self._p('use_body_clearance'):
-            return self._dbg_body, pts[seed][3], len(sel)
-        return seed_r, pts[seed][3], len(sel)
+        reported = self._dbg_body if self._p('use_body_clearance') else seed_r
+        if sel:
+            guard = self._point_guard(sel, self._p('point_guard_rank'))
+            self._dbg_body = min(self._dbg_body, guard)
+            reported = min(reported, guard)
+        return reported, pts[seed][3], len(sel)
+
+    def _point_guard(self, sel, rank):
+        """
+        Distance to the Nth-nearest scan point, measured where the standoff is.
+
+        A fitted circle ROUNDS a sharp corner, so while wrapping one the curve
+        passes inside the corner itself and the reported distance is optimistic
+        -- measured up to +23 mm around a box corner and +54 mm in a room's
+        inside corners, which is most of the clearance the standoff buys. The
+        points do not lie: the corner tip is one of them. Reporting the smaller
+        of the fitted distance and this one keeps the smooth, low-noise estimate
+        everywhere the surface really is smooth, and falls back to raw points
+        exactly where the fit is wrong.
+
+        The Nth-nearest rather than the very nearest, because the single nearest
+        beam carries the full noise and biases the standoff outward: at rank 3
+        the average cost is ~7 mm of extra clearance, against ~14 mm at rank 1.
+        """
+        off = self._p('body_offset_m') if self._p('use_body_clearance') else 0.0
+        ds = sorted(math.hypot(p[0] + off, p[1]) for p in sel)
+        return ds[min(int(rank) - 1, len(ds) - 1)]
 
     def _body_distance(self, co, d_lidar, bear):
         """
