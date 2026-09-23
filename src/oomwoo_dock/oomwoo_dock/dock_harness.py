@@ -96,12 +96,29 @@ def scan(segs, circs, sigma=RANGE_SIGMA_M):
     return pts
 
 
-def scene(back_wall=False, wall_gap=0.0, chair=False):
-    """Dock geometry in the DOCK frame, plus optional clutter around it."""
+def scene(back_wall=False, wall_gap=0.0, chair=False, room=False):
+    """
+    Dock geometry in the DOCK frame, plus optional clutter around it.
+
+    `room` builds a furnished room rather than a dock in a void: walls on three
+    sides, a dining table with four legs and two chairs. The bare-dock scene
+    flattered the detector -- in a real kitchen the scan is mostly furniture, and
+    the search has to pick the dock out of it.
+    """
     segs, circs = template()
-    if back_wall:
+    if back_wall or room:
         x = 0.325 + wall_gap
-        segs = segs + [((x, -2.0), (x, 2.0))]
+        segs = segs + [((x, -2.4), (x, 2.4))]
+    if room:
+        segs = segs + [((x - 3.4, -2.4), (x, -2.4)),        # side walls
+                       ((x - 3.4, 2.4), (x, 2.4)),
+                       ((x - 3.4, -2.4), (x - 3.4, 2.4))]   # far wall
+        for cx, cy in ((-1.15, 0.55), (-1.15, 1.25), (-1.85, 0.55), (-1.85, 1.25)):
+            circs = circs + [((cx, cy), 0.03)]              # dining table legs
+        for cx, cy in ((-0.85, -0.9), (-0.85, -1.2), (-1.15, -0.9), (-1.15, -1.2)):
+            circs = circs + [((cx, cy), 0.02)]              # a chair
+        for cx, cy in ((-2.3, -0.5), (-2.3, -0.8), (-2.6, -0.5), (-2.6, -0.8)):
+            circs = circs + [((cx, cy), 0.02)]              # another chair
     if chair:
         for dx, dy in ((0.15, 0.55), (0.15, 0.95), (0.55, 0.55), (0.55, 0.95)):
             circs = circs + [((dx, dy), 0.02)]
@@ -234,8 +251,8 @@ def seated(pose_in_dock):
 
 
 def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
-        slip=0.02, back_wall=True, chair=False, detect_every=DETECT_EVERY,
-        start=None, prior='fixed', debug=False):
+        slip=0.02, back_wall=True, chair=False, room=False,
+        detect_every=DETECT_EVERY, start=None, prior='fixed', debug=False):
     """
     One docking attempt. Returns a metrics dict.
 
@@ -249,7 +266,7 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
     """
     random.seed(seed)
     fit = DockFitter()
-    segs, circs = scene(back_wall=back_wall, chair=chair)
+    segs, circs = scene(back_wall=back_wall, chair=chair, room=room)
     if start is not None:
         t_w_b = (start[0], start[1], wrap(math.radians(start[2])))
     else:
@@ -360,7 +377,7 @@ CI_POSES = [(-1.10, -0.15, 0), (-1.10, 0.45, 180), (-0.80, -0.45, 90),
 
 
 def grid(xs=(-1.1, -0.8, -0.55, -0.35), ys=(-0.45, -0.15, 0.15, 0.45),
-         yaws=(0, 90, 180, -90), prior='fixed', seconds=70.0):
+         yaws=(0, 90, 180, -90), prior='fixed', seconds=70.0, room=False):
     """
     Dock from a grid of starting poses, the way a person parks the robot.
 
@@ -374,7 +391,7 @@ def grid(xs=(-1.1, -0.8, -0.55, -0.35), ys=(-0.45, -0.15, 0.15, 0.45),
                 if dock_contact((x, y, 0.0)):
                     continue
                 m = run(seed=100 * i + 10 * j + k, start=(x, y, yaw),
-                        prior=prior, seconds=seconds)
+                        prior=prior, seconds=seconds, room=room)
                 out.append((x, y, yaw, m))
     return out
 

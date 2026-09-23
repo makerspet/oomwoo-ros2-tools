@@ -76,6 +76,7 @@ DEFAULTS = {
     'beacon_range_m': 0.8,        # assumed range when only a bearing is known
     'stale_after_s': 1.5,         # no accepted fix for this long: hunt the scan
     'min_points': 20,             # fewer than this in the gate: no attempt
+    'use_fallback_prior': False,  # trust prior_* below when nothing else is known
     'prior_x': 0.6,               # fallback prior, in the scan frame
     'prior_y': 0.0,
     'prior_yaw_deg': 0.0,
@@ -126,8 +127,14 @@ class DockDetector(Node):
         """Bearing to the dock's IR beacon, in the scan frame."""
         self.beacon = float(msg.data)
 
-    def _current_prior(self):
-        """Last good fit while it is fresh, else the supplied or default prior."""
+    def _hint(self):
+        """
+        Where to look for the dock, or None if there is no reason to prefer one.
+
+        Returning None matters: it is what puts the node into a full search of
+        the scan instead of a refinement around a guess. A wrong guess is worse
+        than no guess, because the scan gets gated around it.
+        """
         now = self.get_clock().now()
         if self.prior is not None and self.t_prior is not None:
             age = (now - self.t_prior).nanoseconds * 1e-9
@@ -139,8 +146,10 @@ class DockDetector(Node):
             r = self._p('beacon_range_m')
             return (r * math.cos(self.beacon), r * math.sin(self.beacon),
                     wrap(self.beacon + math.pi))
-        return (self._p('prior_x'), self._p('prior_y'),
-                math.radians(self._p('prior_yaw_deg')))
+        if self._p('use_fallback_prior'):
+            return (self._p('prior_x'), self._p('prior_y'),
+                    math.radians(self._p('prior_yaw_deg')))
+        return None
 
     def _on_scan(self, msg: LaserScan) -> None:
         now = self.get_clock().now()
@@ -157,20 +166,23 @@ class DockDetector(Node):
         ok = np.isfinite(rng) & (rng > msg.range_min) & (rng < max_r)
         pts = np.stack([rng[ok] * np.cos(ang[ok]), rng[ok] * np.sin(ang[ok])], axis=1)
 
-        prior = self._current_prior()
-        gate = self._p('gate_radius_m')
-        if gate > 0.0 and len(pts):
-            near = np.linalg.norm(pts - np.array([prior[0], prior[1]]), axis=1) < gate
-            pts = pts[near]
+        # A hint is a fresh fix, a supplied prior, or a beacon bearing. Without
+        # one there is nothing to gate around: gating on the fallback "0.6 m dead
+        # ahead" prior threw away the dock's own returns before the search could
+        # look at them, leaving 9-23 points of whatever furniture sat ahead.
+        now_s = now.nanoseconds * 1e-9
+        hint = self._hint()
+        if hint is not None:
+            gate = self._p('gate_radius_m')
+            if gate > 0.0 and len(pts):
+                near = np.linalg.norm(
+                    pts - np.array([hint[0], hint[1]]), axis=1) < gate
+                pts = pts[near]
         if len(pts) < self._p('min_points'):
             self._publish_cost(None)
             return
 
-        now_s = now.nanoseconds * 1e-9
-        fresh = (self.t_fix is not None
-                 and now_s - self.t_fix < self._p('stale_after_s'))
-        got = (self.fit.detect(pts, prior)
-               if fresh or self.beacon is not None or self.prior is not None
+        got = (self.fit.detect(pts, hint) if hint is not None
                else self.fit.search(pts))
         if got is None:
             self._publish_cost(None)
@@ -181,10 +193,12 @@ class DockDetector(Node):
             self.get_logger().info(
                 'dock fit rejected: cost %.5f (max %.5f), coverage %.2f (min'
                 ' %.2f), sides %.2f (min %.2f), %d in the bay (max %d), %d points'
+                ' [%s]'
                 % (got.cost, self._p('max_cost'), got.coverage,
                    self._p('min_coverage'), got.side_cover,
                    self._p('min_side_coverage'), got.intrusions,
-                   self._p('max_intrusions'), got.inliers),
+                   self._p('max_intrusions'), got.inliers,
+                   'tracking' if hint is not None else 'searching'),
                 throttle_duration_sec=2.0)
             self.pending = None
             return
@@ -193,7 +207,10 @@ class DockDetector(Node):
         # can score BETTER than the truth, so it is caught by how it arrives --
         # as a jump away from a running estimate. When genuinely lost, two scans
         # must agree instead.
-        if fresh and self.prior is not None:
+        tracking = (self.t_fix is not None
+                    and now_s - self.t_fix < self._p('stale_after_s')
+                    and self.prior is not None)
+        if tracking:
             good = _near(got.pose, self.prior, self._p('jump_m'),
                          self._p('jump_deg'))
             why = 'jumped %.2f m from the running estimate' % math.hypot(
@@ -211,6 +228,12 @@ class DockDetector(Node):
         self.prior = got.pose
         self.t_prior = now
         self.t_fix = now_s
+        self.get_logger().info(
+            'dock fix: %+.2f m ahead, %+.2f m across, %+.0f deg; coverage %.2f,'
+            ' sides %.2f, %d points'
+            % (got.pose[0], got.pose[1], math.degrees(got.pose[2]),
+               got.coverage, got.side_cover, got.inliers),
+            throttle_duration_sec=5.0)
         self._publish_pose(got.pose, msg.header.stamp)
         if self._p('publish_markers'):
             self._publish_markers(got.pose, msg.header.stamp)

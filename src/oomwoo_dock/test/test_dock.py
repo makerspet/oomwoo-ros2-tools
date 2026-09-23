@@ -167,16 +167,36 @@ def test_docks_from_parked_poses_without_any_prior():
     0.6 m dead ahead" prior could not survive: it docked 3 times in 64. Hunting
     the whole scan for the dock, refusing to enter the mouth unless lined up, and
     driving to the staging point backwards when it lies behind, took the same
-    grid to 58. Measured on these twelve poses: 11 dock, none touch the dock.
+    grid to 58. Measured on these twelve poses in a FURNISHED room -- walls, a
+    dining table and two chairs, so the scan is mostly furniture: 10 dock, none
+    touch the dock.
 
     The gate is deliberately below the measured figure. A robot that can do this
     with no beacon at all has margin to spare once the beacon is fitted.
     """
     docked = 0
     for i, pose in enumerate(harness.CI_POSES):
-        m = harness.run(seed=i, start=pose, prior='fixed', seconds=90.0)
+        m = harness.run(seed=i, start=pose, prior='fixed', seconds=90.0, room=True)
         assert m['why'] != 'hit the dock', 'hit the dock from %s' % (pose,)
         assert m['why'] != 'shoved the dock', 'shoved the dock from %s' % (pose,)
         docked += m['ok']
-    assert docked >= 10, 'only %d of %d parked poses docked' % (
+    assert docked >= 9, 'only %d of %d parked poses docked' % (
+        docked, len(harness.CI_POSES))
+
+
+def test_docks_from_parked_poses_with_a_beacon():
+    """
+    The same parked poses, with the hint a beacon or map position provides.
+
+    Measured in the furnished room: 12 of 12, none touching the dock. Without any
+    hint the same poses manage 10, and the two that fail are a robot standing
+    side-on half a metre from the dock's flank and one facing away at 1.1 m in
+    clutter -- exactly the ambiguity a modulated beacon removes outright.
+    """
+    docked = 0
+    for i, pose in enumerate(harness.CI_POSES):
+        m = harness.run(seed=i, start=pose, prior='near', seconds=90.0, room=True)
+        assert m['why'] != 'hit the dock', 'hit the dock from %s' % (pose,)
+        docked += m['ok']
+    assert docked >= 11, 'only %d of %d parked poses docked' % (
         docked, len(harness.CI_POSES))
