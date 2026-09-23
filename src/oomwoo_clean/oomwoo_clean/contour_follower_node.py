@@ -39,16 +39,17 @@ and the output omega are both negated).
 Phase 1: FOLLOW + convex ARC, with a rotate-in-place ALIGN entry. No loop-closure
 yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.md.
 
-Bump = halt, for now: any bumper contact while active stops the robot dead and
-parks it in HALTED, so a collision is left exactly where it happened to be looked
-at, instead of being ground into or driven away from. Publish true on ~/enable
-to resume. A stand-in until a real front guard exists -- the follower steers only
+Every bump is logged: the start of each contact, not every message. With
+halt_on_bump (the default) a bump while active also stops the robot dead and
+parks it in HALTED, so a collision is left exactly where it happened to be
+looked at, instead of being ground into or driven away from. Publish true on
+~/enable to resume. A stand-in until a real front guard exists -- the follower steers only
 on the nearest surface, so something in its path that is farther than the
 followed wall is not avoided.
 
   subscribes  scan                  sensor_msgs/LaserScan      (SensorData QoS)
-  subscribes  bumper_left/contact   ros_gz_interfaces/Contacts (halt_on_bump)
-  subscribes  bumper_right/contact  ros_gz_interfaces/Contacts (halt_on_bump)
+  subscribes  bumper_left/contact   ros_gz_interfaces/Contacts (logged; halts if halt_on_bump)
+  subscribes  bumper_right/contact  ros_gz_interfaces/Contacts (logged; halts if halt_on_bump)
   subscribes  ~/enable              std_msgs/Bool              (stop/go; resumes HALTED)
   publishes   cmd_vel               geometry_msgs/Twist
   publishes   cleaning_active       std_msgs/Bool              (latched; True while active)
@@ -56,6 +57,7 @@ followed wall is not avoided.
 """
 
 import math
+import time
 
 from geometry_msgs.msg import Point, Twist
 
@@ -121,6 +123,7 @@ DEFAULTS = {
     'pub_hz': 20.0,                # cmd_vel republish rate (control runs on scan)
     'auto_start': True,            # begin ALIGN on launch
     'halt_on_bump': True,          # any bumper contact -> stop dead, state HALTED
+    'bump_quiet_s': 0.5,           # a side is 'newly bumped' after this long clear
 }
 
 
@@ -151,6 +154,7 @@ class ContourFollower(Node):
         self._dbg_n = 0               # points in the fit window
         self._dbg_body = None         # body-centre distance to the fitted curve
         self._dbg_r = None            # fitted radius, None = straight
+        self._bump_last = {}          # side -> time.monotonic() of its last contact
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -221,23 +225,40 @@ class ContourFollower(Node):
 
     def _on_bump(self, msg, which) -> None:
         """
-        Stop dead on any bumper contact while active, and stay stopped.
+        Log every bump; with halt_on_bump, also stop dead and stay stopped.
 
-        The command is zeroed and published at once rather than on the next
-        timer tick, so the robot does not keep pushing for up to a cycle. The
-        log line records where the follower thought the surface was at the
-        moment of contact, which is the question the collision raises.
+        Gazebo publishes a contact message on every physics step the bumper is
+        pressed -- hundreds a second -- so only the START of a bump is logged: a
+        side counts as newly bumped once it has been clear for bump_quiet_s.
+        Each line records where the follower thought the surface was at that
+        moment, which is the question a collision raises.
+
+        When halting, the command is zeroed and published at once rather than
+        on the next timer tick, so the robot does not keep pushing for a cycle.
         """
-        if not msg.contacts or not self._p('halt_on_bump'):
+        if not msg.contacts:
             return
+        now = time.monotonic()
+        last = self._bump_last.get(which)
+        self._bump_last[which] = now
+        fresh = last is None or (now - last) > self._p('bump_quiet_s')
         if self.state not in ACTIVE_STATES:
+            return
+        halt = bool(self._p('halt_on_bump'))
+        if not (fresh or halt):
+            return
+        seen = ('nothing' if self._dbg_d is None else
+                'surface at %.2f m, %+.0f deg' % (self._dbg_d, math.degrees(self._dbg_b)))
+        if not halt:
+            self.get_logger().warn(
+                'BUMP (%s bumper) during %s. Follower was tracking: %s [%s]. '
+                'Carrying on (halt_on_bump is off).'
+                % (which, self.state, seen, self._fit_description()))
             return
         was = self.state
         self._set_cmd(0.0, 0.0)
         self.cmd_pub.publish(self.cmd)
         self._set_state('HALTED')
-        seen = ('nothing' if self._dbg_d is None else
-                'surface at %.2f m, %+.0f deg' % (self._dbg_d, math.degrees(self._dbg_b)))
         self.get_logger().warn(
             'BUMP (%s bumper) during %s -- halted. Follower was tracking: %s [%s]. '
             'Publish true on ~/enable to resume.'

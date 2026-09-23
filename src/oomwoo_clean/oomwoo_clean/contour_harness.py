@@ -141,6 +141,7 @@ def make_follower(**overrides):
     node._p = params.get
     node._dbg_d = node._dbg_b = node._dbg_fit = node._dbg_r = None
     node._dbg_n = 0
+    node._bump_last = {}
     return node, params
 
 

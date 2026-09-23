@@ -296,10 +296,36 @@ def test_empty_contact_messages_and_idle_states_are_ignored():
 
 
 def test_halt_on_bump_can_be_switched_off():
-    """halt_on_bump:=false restores the old behaviour, for A/B runs."""
+    """halt_on_bump:=false keeps following, for A/B runs -- but still logs the bump."""
     node = _bump_ready('FOLLOW', halt_on_bump=False)
     node._on_bump(SimpleNamespace(contacts=[object()]), 'left')
     assert node.state == 'FOLLOW'
+    node.cmd_pub.publish.assert_not_called()
+    node.get_logger().warn.assert_called_once()
+    assert 'BUMP (left bumper)' in node.get_logger().warn.call_args[0][0]
+
+
+def test_each_bump_is_logged_once_not_once_per_message(monkeypatch):
+    """
+    Gazebo sends a contact message every physics step; log the start of a bump.
+
+    A held bumper is one bump. The same side counts as bumped again only after
+    it has been clear for bump_quiet_s, and each side is tracked separately.
+    """
+    from oomwoo_clean import contour_follower_node as cfn
+    clock = [100.0]
+    monkeypatch.setattr(cfn.time, 'monotonic', lambda: clock[0])
+    node = _bump_ready('FOLLOW', halt_on_bump=False)
+    hit = SimpleNamespace(contacts=[object()])
+    for _ in range(50):                      # held for a second: one bump
+        node._on_bump(hit, 'right')
+        clock[0] += 0.02
+    assert node.get_logger().warn.call_count == 1
+    node._on_bump(hit, 'left')               # the other side is its own bump
+    assert node.get_logger().warn.call_count == 2
+    clock[0] += 1.0                          # clear for longer than bump_quiet_s
+    node._on_bump(hit, 'right')
+    assert node.get_logger().warn.call_count == 3
 
 
 def test_enable_resumes_from_halted():
