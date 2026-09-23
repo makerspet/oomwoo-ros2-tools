@@ -15,17 +15,27 @@
 """
 Find the docking station in the LiDAR scan and publish its pose.
 
-Fits the dock's known cross-section to the scan, seeded from a prior pose --
-the dock's recorded position, the bearing of its beacon, or the node's own last
-estimate. Publishes the mouth pose, so a consumer only has to reverse along
-+x of that frame.
+Fits the dock's known cross-section to the scan and publishes the mouth pose, so
+a consumer only has to reverse along +x of that frame.
+
+Where the search starts matters more than the fit itself. Given a bearing from
+the dock's IR beacon, a recorded map position, or its own last fix, only a small
+offset has to be resolved. Given none of those, the node hunts the whole scan
+(`search`): assuming the dock is dead ahead fails the moment somebody parks the
+robot facing elsewhere, which on a grid of starting poses was most of them.
+
+Geometry alone cannot always say WHICH dock-shaped thing is the dock, so a fit
+must pass the four tests in dock_template.accept and must not jump away from a
+fresh estimate. A beacon settles identity outright; these remain the backstop
+for when it is out of view.
 
 Runs at a modest rate on purpose: the fit is worth doing well a few times a
 second rather than badly every scan, and the robot is nearly stationary while it
 lines up.
 
-  subscribes  scan          sensor_msgs/LaserScan   (SensorData QoS)
-  subscribes  ~/prior       geometry_msgs/PoseStamped  (optional, in the scan frame)
+  subscribes  scan             sensor_msgs/LaserScan  (SensorData QoS)
+  subscribes  ~/prior          geometry_msgs/PoseStamped (optional, scan frame)
+  subscribes  ~/beacon_bearing std_msgs/Float32       (optional, radians)
   publishes   ~/dock_pose   geometry_msgs/PoseStamped  (mouth centre, scan frame)
   publishes   ~/cost        std_msgs/Float32        (fit cost; lower is better)
   publishes   ~/coverage    std_msgs/Float32        (share of the template seen)
@@ -56,7 +66,15 @@ DEFAULTS = {
     'max_range_m': 2.0,           # ignore returns beyond this
     'gate_radius_m': 1.2,         # keep points within this of the prior
     'max_cost': 0.004,            # above this the fit is not believed
-    'min_coverage': 0.40,         # template must be SUPPORTED, not just explained
+    'min_coverage': 0.35,         # template must be SUPPORTED, not just explained
+    'min_side_coverage': 0.10,    # BOTH sides of the bay must be seen
+    'max_intrusions': 2,          # scan points inside the bay: a dock is hollow
+    'jump_m': 0.15,               # a fit this far from a fresh estimate...
+    'jump_deg': 15.0,             # ...is an impostor, not a correction
+    'agree_m': 0.06,              # when lost, two scans must land this close...
+    'agree_deg': 8.0,             # ...and this well aligned
+    'beacon_range_m': 0.8,        # assumed range when only a bearing is known
+    'stale_after_s': 1.5,         # no accepted fix for this long: hunt the scan
     'min_points': 20,             # fewer than this in the gate: no attempt
     'prior_x': 0.6,               # fallback prior, in the scan frame
     'prior_y': 0.0,
@@ -76,9 +94,12 @@ class DockDetector(Node):
             self.declare_parameter(name, default)
         self.fit = DockFitter()
         self.tmpl = template()
-        self.prior = None
+        self.prior = None             # last accepted fit, or a supplied prior
         self.t_prior = None
         self.t_last = None
+        self.t_fix = None             # time of the last ACCEPTED fit
+        self.pending = None           # a fit waiting for a second opinion
+        self.beacon = None            # bearing to the dock's beacon, if any
         self.frame = 'base_scan'
         self.pose_pub = self.create_publisher(PoseStamped, '~/dock_pose', 10)
         self.cost_pub = self.create_publisher(Float32, '~/cost', 10)
@@ -87,6 +108,8 @@ class DockDetector(Node):
         self.create_subscription(
             LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
         self.create_subscription(PoseStamped, '~/prior', self._on_prior, 10)
+        self.create_subscription(
+            Float32, '~/beacon_bearing', self._on_beacon, 10)
         self.get_logger().info('dock_detector: fitting the dock cross-section')
 
     def _p(self, name):
@@ -99,6 +122,10 @@ class DockDetector(Node):
         self.prior = (msg.pose.position.x, msg.pose.position.y, yaw)
         self.t_prior = self.get_clock().now()
 
+    def _on_beacon(self, msg: Float32) -> None:
+        """Bearing to the dock's IR beacon, in the scan frame."""
+        self.beacon = float(msg.data)
+
     def _current_prior(self):
         """Last good fit while it is fresh, else the supplied or default prior."""
         now = self.get_clock().now()
@@ -106,6 +133,12 @@ class DockDetector(Node):
             age = (now - self.t_prior).nanoseconds * 1e-9
             if age < self._p('hold_prior_s'):
                 return self.prior
+        if self.beacon is not None:
+            # a beacon gives bearing, not range: assume a plausible range and
+            # point the dock's mouth back towards the robot
+            r = self._p('beacon_range_m')
+            return (r * math.cos(self.beacon), r * math.sin(self.beacon),
+                    wrap(self.beacon + math.pi))
         return (self._p('prior_x'), self._p('prior_y'),
                 math.radians(self._p('prior_yaw_deg')))
 
@@ -133,24 +166,54 @@ class DockDetector(Node):
             self._publish_cost(None)
             return
 
-        got = self.fit.detect(pts, prior)
+        now_s = now.nanoseconds * 1e-9
+        fresh = (self.t_fix is not None
+                 and now_s - self.t_fix < self._p('stale_after_s'))
+        got = (self.fit.detect(pts, prior)
+               if fresh or self.beacon is not None or self.prior is not None
+               else self.fit.search(pts))
         if got is None:
             self._publish_cost(None)
             return
         self._publish_cost(got.cost, got.coverage)
-        if not accept(got, self._p('max_cost'), self._p('min_coverage')):
+        if not accept(got, self._p('max_cost'), self._p('min_coverage'),
+                      self._p('max_intrusions'), self._p('min_side_coverage')):
             self.get_logger().info(
-                'dock fit rejected: cost %.5f (max %.5f), coverage %.2f (min %.2f),'
-                ' %d points' % (got.cost, self._p('max_cost'), got.coverage,
-                                self._p('min_coverage'), got.inliers),
+                'dock fit rejected: cost %.5f (max %.5f), coverage %.2f (min'
+                ' %.2f), sides %.2f (min %.2f), %d in the bay (max %d), %d points'
+                % (got.cost, self._p('max_cost'), got.coverage,
+                   self._p('min_coverage'), got.side_cover,
+                   self._p('min_side_coverage'), got.intrusions,
+                   self._p('max_intrusions'), got.inliers),
                 throttle_duration_sec=2.0)
+            self.pending = None
             return
-        pose = got.pose
-        self.prior = pose
+        # Where a dock stands against a wall there is a second, stable fit: the
+        # wall as the bay's back and one real side plate as one of its walls. It
+        # can score BETTER than the truth, so it is caught by how it arrives --
+        # as a jump away from a running estimate. When genuinely lost, two scans
+        # must agree instead.
+        if fresh and self.prior is not None:
+            good = _near(got.pose, self.prior, self._p('jump_m'),
+                         self._p('jump_deg'))
+            why = 'jumped %.2f m from the running estimate' % math.hypot(
+                got.pose[0] - self.prior[0], got.pose[1] - self.prior[1])
+        else:
+            good = (self.pending is not None
+                    and _near(got.pose, self.pending, self._p('agree_m'),
+                              self._p('agree_deg')))
+            why = 'waiting for a second scan to agree'
+        self.pending = got.pose
+        if not good:
+            self.get_logger().info('dock fit held: %s' % why,
+                                   throttle_duration_sec=2.0)
+            return
+        self.prior = got.pose
         self.t_prior = now
-        self._publish_pose(pose, msg.header.stamp)
+        self.t_fix = now_s
+        self._publish_pose(got.pose, msg.header.stamp)
         if self._p('publish_markers'):
-            self._publish_markers(pose, msg.header.stamp)
+            self._publish_markers(got.pose, msg.header.stamp)
 
     def _publish_cost(self, cost, coverage=0.0) -> None:
         self.cost_pub.publish(Float32(data=float(9.9 if cost is None else cost)))
@@ -221,6 +284,12 @@ class DockDetector(Node):
         self.mark_pub.publish(arr)
 
 
+def _near(a, b, tol_m, tol_deg):
+    """Report whether two estimates describe the same dock."""
+    return (math.hypot(a[0] - b[0], a[1] - b[1]) < tol_m
+            and abs(wrap(a[2] - b[2])) < math.radians(tol_deg))
+
+
 def main(args=None) -> None:
     """Spin the detector until shutdown."""
     rclpy.init(args=args)
@@ -229,6 +298,13 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except RuntimeError as exc:
+        # Ctrl-C can land inside rclpy's message take, which then fails to
+        # convert a half-destroyed message. Nothing is actually wrong, but it
+        # exits non-zero and buries the run's logs under a traceback.
+        if rclpy.ok():
+            raise
+        node.get_logger().debug('ignoring shutdown race: %s' % exc)
     finally:
         node.destroy_node()
         if rclpy.ok():

@@ -15,12 +15,20 @@
 """
 Reverse the robot into the dock, using the detector's mouth pose.
 
-Three phases, because a differential-drive robot cannot cancel a lateral offset
+Four phases, because a differential-drive robot cannot cancel a lateral offset
 by turning on the spot:
 
-  GOTO   drive to a staging point on the bay axis, still facing the dock
-  TURN   turn until the TAIL points into the bay
-  BACK   reverse along the axis, steering on lateral and heading error
+  GOTO     drive to a staging point on the bay axis, forwards OR backwards
+  TURN     turn until the TAIL points into the bay
+  BACK     reverse along the axis, steering on lateral and heading error
+  REGROUP  pull back out to the staging point and line up again
+
+Two things the 2D rig (dock_harness) taught, each after a grid of starting poses
+failed: the approach must be able to drive BACKWARDS, because the staging point
+is often behind the robot and driving a loop around the dock means driving
+through it; and the robot must refuse to cross the mouth unless it is genuinely
+lined up, because the bay leaves only 25 mm either side and a misaligned entry
+clips a side plate.
 
 The robot has to back in to wash its mops, and its LiDAR sits ahead of the wheel
 axle, so the sensor keeps watching the dock over the robot's own tail. Detections
@@ -31,7 +39,7 @@ which is why the estimate is kept in the body frame and moved by each command.
   subscribes  odom             nav_msgs/Odometry          (to carry the estimate)
   subscribes  ~/enable         std_msgs/Bool
   publishes   cmd_vel          geometry_msgs/Twist
-  publishes   ~/state          std_msgs/String   GOTO/TURN/BACK/DONE/IDLE
+  publishes   ~/state          std_msgs/String   GOTO/TURN/BACK/REGROUP/DONE/IDLE
   publishes   ~/docked         std_msgs/Bool     (latched)
 """
 
@@ -58,10 +66,15 @@ from std_msgs.msg import Bool, String
 DEFAULTS = {
     'lidar_offset_m': 0.0745,     # sensor ahead of the wheel axle
     'body_radius_m': 0.1745,
-    'bay_depth_m': 0.225,         # mouth to the back face
+    'bay_depth_m': 0.240,         # mouth to the back face
     'stage_x_m': -0.55,           # staging point, outside the mouth
     'stage_tol_m': 0.04,
     'turn_tol_deg': 3.0,
+    'entry_guard_x_m': -0.22,     # past this the bay walls are within reach...
+    'entry_lateral_m': 0.025,     # ...so only enter this well centred
+    'entry_yaw_deg': 5.0,
+    'max_attempts': 3,            # regroups before giving up
+    'seat_margin_m': 0.015,       # stop short; contact closes the last bit
     'v_approach': 0.14,
     'v_back': 0.06,
     'k_stage_heading': 1.8,
@@ -70,7 +83,6 @@ DEFAULTS = {
     'k_heading': 1.8,
     'omega_max': 0.8,
     'pose_timeout_s': 3.0,        # no fix for this long: stop
-    'seat_margin_m': 0.005,
     'auto_start': True,
     'pub_hz': 20.0,
 }
@@ -86,6 +98,8 @@ class DockDrive(Node):
             self.declare_parameter(name, default)
         self.state = 'IDLE'
         self.enabled = bool(self._p('auto_start'))
+        self.attempts = 0
+        self.prefer = None            # last drive direction, for hysteresis
         self.est = None               # dock pose in the BODY frame
         self.t_fix = None
         self.odom = None
@@ -158,36 +172,83 @@ class DockDrive(Node):
             return
 
         x, y, th = inv(self.est)            # robot pose in the DOCK frame
-        wmax = self._p('omega_max')
-        seat_x = self._p('bay_depth_m') - self._p('body_radius_m')
+        stage = (self._p('stage_x_m'), 0.0)
         if self.state == 'GOTO':
-            dx, dy = self._p('stage_x_m') - x, -y
-            if math.hypot(dx, dy) < self._p('stage_tol_m'):
+            # too close to line up safely: pull out along the axis first
+            target = (stage if x < self._p('stage_x_m') + 0.05
+                      else (self._p('stage_x_m') - 0.20, y))
+            v, w, done = self._goto(target, x, y, th)
+            if done and target == stage:
                 self._set_state('TURN')
                 self._send(0.0, 0.0)
                 return
-            to_stage = wrap(math.atan2(dy, dx) - th)
-            w = _clamp(self._p('k_stage_heading') * to_stage, -wmax, wmax)
-            self._send(self._p('v_approach') * max(0.0, math.cos(to_stage)), w)
+            self._send(v, w)
         elif self.state == 'TURN':
             err = wrap(th - math.pi)        # tail must point into the bay
             if abs(err) < math.radians(self._p('turn_tol_deg')):
                 self._set_state('BACK')
                 self._send(0.0, 0.0)
                 return
-            self._send(0.0, _clamp(-self._p('k_turn') * err, -wmax, wmax))
+            self._send(0.0, _clamp(-self._p('k_turn') * err,
+                                   -self._p('omega_max'), self._p('omega_max')))
+        elif self.state == 'REGROUP':
+            v, w, done = self._goto(stage, x, y, th)
+            if done:
+                self._set_state('TURN')
+                self._send(0.0, 0.0)
+                return
+            self._send(v, w)
         else:
             if x + self._p('body_radius_m') >= (self._p('bay_depth_m')
-                                                - self._p('seat_margin_m')) \
-                    or x > seat_x:
+                                                - self._p('seat_margin_m')):
                 self._set_state('DONE')
                 self._send(0.0, 0.0)
                 self.get_logger().info(
                     'docked: lateral %+.1f mm, yaw %+.2f deg'
                     % (y * 1e3, math.degrees(wrap(th - math.pi))))
                 return
-            w = -(self._p('k_lateral') * y + self._p('k_heading') * wrap(th - math.pi))
-            self._send(-self._p('v_back'), _clamp(w, -wmax, wmax))
+            # entry gate: the bay is only 25 mm wider than the robot per side
+            if x > self._p('entry_guard_x_m') and (
+                    abs(y) > self._p('entry_lateral_m')
+                    or abs(wrap(th - math.pi))
+                    > math.radians(self._p('entry_yaw_deg'))):
+                self.attempts += 1
+                self.get_logger().warn(
+                    'not lined up at the mouth (lateral %+.0f mm, yaw %+.1f deg);'
+                    ' %s' % (y * 1e3, math.degrees(wrap(th - math.pi)),
+                             'giving up' if self.attempts > self._p('max_attempts')
+                             else 'pulling out to try again'))
+                self._set_state('IDLE' if self.attempts > self._p('max_attempts')
+                                else 'REGROUP')
+                self._send(0.0, 0.0)
+                return
+            w = -(self._p('k_lateral') * y
+                  + self._p('k_heading') * wrap(th - math.pi))
+            self._send(-self._p('v_back'),
+                       _clamp(w, -self._p('omega_max'), self._p('omega_max')))
+
+    def _goto(self, target, x, y, th):
+        """
+        Drive to a point in the dock frame, forwards or backwards.
+
+        Bidirectional because the staging point is often behind the robot. The
+        direction choice has hysteresis: near +-90 deg the cheaper direction
+        flips every cycle and the robot dithers instead of driving.
+        """
+        dx, dy = target[0] - x, target[1] - y
+        if math.hypot(dx, dy) < self._p('stage_tol_m'):
+            return 0.0, 0.0, True
+        err = wrap(math.atan2(dy, dx) - th)
+        limit = math.pi / 2 + (0.35 if self.prefer == 'fwd'
+                               else -0.35 if self.prefer == 'back' else 0.0)
+        backwards = abs(err) > limit
+        if backwards:
+            err = wrap(err - math.pi)
+        wmax = self._p('omega_max')
+        w = _clamp(self._p('k_stage_heading') * err, -wmax, wmax)
+        v = self._p('v_approach') * max(0.0, math.cos(err))
+        self.prefer = 'back' if backwards else 'fwd'
+        return (-v if backwards else v), w, False
 
     def _send(self, v, w) -> None:
         self.cmd.linear.x = float(v)
