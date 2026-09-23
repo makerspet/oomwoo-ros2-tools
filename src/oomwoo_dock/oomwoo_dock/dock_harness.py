@@ -187,31 +187,31 @@ def agrees(a, b, tol_m=AGREE_M, tol_deg=AGREE_DEG):
             and abs(wrap(a[2] - b[2])) < math.radians(tol_deg))
 
 
-def goto_point(target, x, y, th, v_max=0.14, w_max=0.8, tol=0.04, prefer=None):
-    """
-    Drive to a point in the dock frame, forwards or backwards.
+TURN_FIRST_DEG = 20.0      # further off than this, turn in place before driving
 
-    Bidirectional on purpose: the staging point is often BEHIND the robot, and
-    the first version could only drive forwards, so it drove a loop around the
-    dock -- straight through it, in several starting poses.
+
+def goto_point(target, x, y, th, v_max=0.14, w_max=0.8, tol=0.04):
+    """
+    Drive FORWARDS to a point in the dock frame: turn to face it, then go.
+
+    Forwards so that whatever is in the way meets the front bumper; only the
+    last leg into the bay is driven backwards. The first forward-only version
+    turned while it drove, so a point behind the robot became a wide loop, and
+    in several starting poses the loop ran through the dock. Turning in place
+    first takes the straight line instead. The version after that reversed to
+    points behind it, in arcs, blind to anything it backed into.
     """
     dx, dy = target[0] - x, target[1] - y
     if math.hypot(dx, dy) < tol:
         return 0.0, 0.0, True
     err = wrap(math.atan2(dy, dx) - th)
-    # hysteresis: near +-90 deg the cheaper direction flips every step, and the
-    # robot dithers instead of driving
-    limit = math.pi / 2 + (0.35 if prefer == 'fwd' else -0.35 if prefer == 'back'
-                           else 0.0)
-    backwards = abs(err) > limit
-    if backwards:
-        err = wrap(err - math.pi)
     w = max(-w_max, min(w_max, 1.8 * err))
-    v = v_max * max(0.0, math.cos(err))
-    return (-v if backwards else v), w, False
+    if abs(err) > math.radians(TURN_FIRST_DEG):
+        return 0.0, w, False
+    return v_max * math.cos(err), w, False
 
 
-def control(state, x, y, th, attempts, prefer=None, stage_x=STAGE_X_M,
+def control(state, x, y, th, attempts, stage_x=STAGE_X_M,
             stage_tol=STAGE_TOL_M):
     """
     One step of the docking state machine. Returns (v, w, state, attempts).
@@ -232,7 +232,7 @@ def control(state, x, y, th, attempts, prefer=None, stage_x=STAGE_X_M,
             target = (stage_x - 0.20, 0.0)      # too close: pull out first
         else:
             target = stage
-        v, w, done = goto_point(target, x, y, th, prefer=prefer, tol=stage_tol)
+        v, w, done = goto_point(target, x, y, th, tol=stage_tol)
         if done and target == stage:
             return 0.0, 0.0, 'TURN', attempts
         return v, w, state, attempts
@@ -252,7 +252,7 @@ def control(state, x, y, th, attempts, prefer=None, stage_x=STAGE_X_M,
         w = max(-0.5, min(0.5, -(2.5 * y + 1.8 * wrap(th - math.pi))))
         return -0.06, w, state, attempts
     if state == 'REGROUP':
-        v, w, done = goto_point(stage, x, y, th, prefer=prefer, tol=stage_tol)
+        v, w, done = goto_point(stage, x, y, th, tol=stage_tol)
         return (0.0, 0.0, 'TURN', attempts) if done else (v, w, state, attempts)
     return 0.0, 0.0, state, attempts
 
@@ -369,7 +369,6 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
     confirms = 0                # accepted fits so far; start on the second
     searching = True
     attempts = 0
-    prefer = None
     stale = 99                      # cycles since the last accepted fix
     pending = None                  # a fit waiting for a second opinion
     for step in range(int(seconds * SCAN_HZ)):
@@ -470,9 +469,8 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
                 est = mul(inv((0.0, 0.0, spin)), est)
             continue
         x, y, th = inv(est)
-        v, w, state, attempts = control(state, x, y, th, attempts, prefer,
+        v, w, state, attempts = control(state, x, y, th, attempts,
                                         stage_x=stage_x, stage_tol=stage_tol)
-        prefer = 'back' if v < -1e-6 else 'fwd' if v > 1e-6 else prefer
         if state == 'DONE':
             break
         if state == 'GIVE_UP':

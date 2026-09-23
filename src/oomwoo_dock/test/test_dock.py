@@ -172,7 +172,9 @@ def test_docks_from_parked_poses_without_any_prior():
     0.6 m dead ahead" prior could not survive: it docked 3 times in 64. Hunting
     the whole scan for the dock, refusing to enter the mouth unless lined up, and
     driving to the staging point backwards when it lies behind, took the same
-    grid to 58. Measured on these twelve poses in a FURNISHED room -- walls, a
+    grid to 58. Driving there forwards instead, turning in place before each
+    leg, so the bumper leads: 60 of 64 in the furnished room, none touching the
+    dock. Measured on these twelve poses in a FURNISHED room -- walls, a
     dining table and two chairs, so the scan is mostly furniture -- with the
     robot spinning in place to look and moving only after two confirmed fits:
     10 dock, none touch the dock. The two that do not are parked side-on, 0.35 m

@@ -19,7 +19,7 @@ Five phases, because a differential-drive robot cannot cancel a lateral offset
 by turning on the spot:
 
   SEARCH   spin in place until the dock is recognised
-  GOTO     drive to a staging point on the bay axis, forwards OR backwards
+  GOTO     drive forwards to a staging point on the bay axis
   TURN     turn until the TAIL points into the bay
   BACK     reverse along the axis, steering on lateral and heading error
   REGROUP  pull back out to the staging point and line up again
@@ -94,6 +94,7 @@ DEFAULTS = {
     'v_approach': 0.14,
     'v_back': 0.06,
     'k_stage_heading': 1.8,
+    'turn_first_deg': 20.0,       # further off than this, turn before driving
     'k_turn': 1.6,
     'k_lateral': 2.5,
     'k_heading': 1.8,
@@ -119,7 +120,6 @@ class DockDrive(Node):
         self.state = 'IDLE'
         self.enabled = bool(self._p('auto_start'))
         self.attempts = 0
-        self.prefer = None            # last drive direction, for hysteresis
         self.est = None               # dock pose in the BODY frame
         self.t_fix = None
         self.searched = 0.0           # radians spun while looking
@@ -305,26 +305,24 @@ class DockDrive(Node):
 
     def _goto(self, target, x, y, th):
         """
-        Drive to a point in the dock frame, forwards or backwards.
+        Drive FORWARDS to a point in the dock frame: turn to face it, then go.
 
-        Bidirectional because the staging point is often behind the robot. The
-        direction choice has hysteresis: near +-90 deg the cheaper direction
-        flips every cycle and the robot dithers instead of driving.
+        Forwards so that whatever is in the way meets the front bumper; only
+        the last leg into the bay is driven backwards. Reversing to a point
+        behind the robot, as the previous version did, drove blind arcs.
+        Turning in place first, rather than while driving, keeps a point behind
+        the robot from becoming a wide loop -- which in the test rig once ran
+        through the dock.
         """
         dx, dy = target[0] - x, target[1] - y
         if math.hypot(dx, dy) < self._p('stage_tol_m'):
             return 0.0, 0.0, True
         err = wrap(math.atan2(dy, dx) - th)
-        limit = math.pi / 2 + (0.35 if self.prefer == 'fwd'
-                               else -0.35 if self.prefer == 'back' else 0.0)
-        backwards = abs(err) > limit
-        if backwards:
-            err = wrap(err - math.pi)
         wmax = self._p('omega_max')
         w = _clamp(self._p('k_stage_heading') * err, -wmax, wmax)
-        v = self._p('v_approach') * max(0.0, math.cos(err))
-        self.prefer = 'back' if backwards else 'fwd'
-        return (-v if backwards else v), w, False
+        if abs(err) > math.radians(self._p('turn_first_deg')):
+            return 0.0, w, False
+        return self._p('v_approach') * math.cos(err), w, False
 
     def _send(self, v, w) -> None:
         self.cmd.linear.x = float(v)
