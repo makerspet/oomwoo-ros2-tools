@@ -44,7 +44,16 @@ SCAN_HZ = 10.0
 DETECT_EVERY = 5                  # detect at 2 Hz; odometry carries the rest
 BAY_HALF_M = 0.200                # PHYSICAL half width (collision geometry)
 BAY_DEPTH_M = 0.240               # mouth to back face
-STAGE_X_M = -0.55                 # staging point outside the mouth, on the axis
+# Staging point: one robot diameter out from the mouth. Further out is calmer to
+# drive but puts the robot into the room, where it met a dining table. Measured
+# over twelve parked poses, every distance from 0.30 to 0.55 m docked 12/12; the
+# cost of coming in close is final accuracy, 15.8 mm of lateral error against
+# 9.2 mm from 0.55 m, both inside the 25.5 mm the bay allows.
+STAGE_X_M = -0.35
+# Arrive at the staging point tighter than the entry gate (25 mm): turning on
+# the spot cannot fix a lateral offset, and from 0.35 m there is only 0.13 m of
+# reversing left to correct one.
+STAGE_TOL_M = 0.02
 T_BL = (LIDAR_OFFSET_M, 0.0, 0.0)
 
 
@@ -200,18 +209,19 @@ def goto_point(target, x, y, th, v_max=0.14, w_max=0.8, tol=0.04, prefer=None):
     return (-v if backwards else v), w, False
 
 
-def control(state, x, y, th, attempts, prefer=None):
+def control(state, x, y, th, attempts, prefer=None, stage_x=STAGE_X_M,
+            stage_tol=STAGE_TOL_M):
     """
     One step of the docking state machine. Returns (v, w, state, attempts).
 
     x, y, th are the robot's believed pose in the dock frame; the bay mouth is
     at x = 0 and the robot reverses in along +x.
     """
-    stage = (STAGE_X_M, 0.0)
+    stage = (stage_x, 0.0)
     if state == 'GOTO':
         # too close to line up safely: pull out along the axis first
-        target = stage if x < STAGE_X_M + 0.05 else (STAGE_X_M - 0.20, y)
-        v, w, done = goto_point(target, x, y, th, prefer=prefer)
+        target = stage if x < stage_x + 0.05 else (stage_x - 0.20, y)
+        v, w, done = goto_point(target, x, y, th, prefer=prefer, tol=stage_tol)
         if done and target == stage:
             return 0.0, 0.0, 'TURN', attempts
         return v, w, state, attempts
@@ -231,7 +241,7 @@ def control(state, x, y, th, attempts, prefer=None):
         w = max(-0.5, min(0.5, -(2.5 * y + 1.8 * wrap(th - math.pi))))
         return -0.06, w, state, attempts
     if state == 'REGROUP':
-        v, w, done = goto_point(stage, x, y, th, prefer=prefer)
+        v, w, done = goto_point(stage, x, y, th, prefer=prefer, tol=stage_tol)
         return (0.0, 0.0, 'TURN', attempts) if done else (v, w, state, attempts)
     return 0.0, 0.0, state, attempts
 
@@ -252,7 +262,8 @@ def seated(pose_in_dock):
 
 def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         slip=0.02, back_wall=True, chair=False, room=False,
-        detect_every=DETECT_EVERY, start=None, prior='fixed', debug=False):
+        detect_every=DETECT_EVERY, start=None, prior='fixed', debug=False,
+        stage_x=STAGE_X_M, stage_tol=STAGE_TOL_M):
     """
     One docking attempt. Returns a metrics dict.
 
@@ -260,9 +271,14 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
     otherwise the robot starts `dist` from the mouth, `bearing_deg` off the bay
     axis, with `yaw_deg` of heading error.
 
-    `prior` picks where the first guess comes from:
-      'fixed'  0.6 m straight ahead of the robot, what dock.launch.py defaults to
-      'near'   the truth, jittered -- generous, and what the first rig runs used
+    `prior` picks what the robot starts out knowing:
+      'none'  nothing at all: it must find the dock in the scan before it moves
+      'near'  a hint within 0.1 m and 15 deg, as a beacon bearing or a recorded
+              map position would give
+
+    With no hint the robot HOLDS STILL until a fit is accepted, which is what
+    dock_drive does. An earlier version let it drive on an unverified guess, and
+    a robot with no fixes at all drove that guess straight into the dock.
     """
     random.seed(seed)
     fit = DockFitter()
@@ -273,13 +289,13 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         b = math.radians(bearing_deg)
         t_w_b = (-dist * math.cos(b), -dist * math.sin(b),
                  wrap(b + math.radians(yaw_deg)))
-    if prior == 'fixed':
-        est = (0.6 + LIDAR_OFFSET_M, 0.0, 0.0)     # dock assumed dead ahead
-    else:
+    if prior == 'near':
         est = mul(inv(t_w_b), (0.0, 0.0, 0.0))
         est = (est[0] + random.uniform(-0.1, 0.1),
                est[1] + random.uniform(-0.1, 0.1),
                wrap(est[2] + math.radians(random.uniform(-15.0, 15.0))))
+    else:
+        est = None                  # nothing known: hold still and look
     dt = 1.0 / SCAN_HZ
     state = 'GOTO'
     detects = 0
@@ -292,8 +308,8 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
             t_w_l = mul(t_w_b, T_BL)
             pts = scan(*place(segs, circs, inv(t_w_l)))
             # with a fresh fix, refine it; otherwise hunt the whole scan
-            got = (fit.detect(pts, mul(inv(T_BL), est)) if stale < 3
-                   else fit.search(pts))
+            got = (fit.detect(pts, mul(inv(T_BL), est))
+                   if est is not None and stale < 3 else fit.search(pts))
             if debug and step % (detect_every * 4) == 0:
                 true_d = mul(inv(t_w_l), (0.0, 0.0, 0.0))
                 print('   t=%4.1f %-7s %s cost=%.5f cover=%.2f side=%.2f intr=%2d err=%.3f'
@@ -307,7 +323,7 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
                                     got.pose[1] - true_d[1]) if got else 9.9))
             if accept(got):
                 cand = mul(T_BL, got.pose)
-                if stale < 3:
+                if est is not None and stale < 3:
                     # tracking: a fit that jumps away from the running estimate
                     # is an impostor. The dock against a wall offers a second,
                     # cheaper fit half a metre aside, and it is stable, so two
@@ -326,8 +342,11 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
             else:
                 pending = None
                 stale += 1
+        if est is None:            # no fix yet: the robot does not move
+            continue
         x, y, th = inv(est)
-        v, w, state, attempts = control(state, x, y, th, attempts, prefer)
+        v, w, state, attempts = control(state, x, y, th, attempts, prefer,
+                                        stage_x=stage_x, stage_tol=stage_tol)
         prefer = 'back' if v < -1e-6 else 'fwd' if v > 1e-6 else prefer
         if state == 'DONE':
             break
@@ -344,6 +363,10 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
                     'yaw_err': wrap(true_pose[2] - math.pi), 'detects': detects}
     pose = inv(mul(inv(t_w_b), (0.0, 0.0, 0.0)))
     yaw_err = wrap(pose[2] - math.pi)
+    if detects == 0:
+        return {'ok': False, 'why': 'never found the dock', 'state': state,
+                'pose': pose, 'lateral': pose[1], 'yaw_err': yaw_err,
+                'detects': 0}
     ok = (state == 'DONE'
           and abs(pose[1]) < BAY_HALF_M - BODY_RADIUS_M
           and abs(yaw_err) < math.radians(6.0))
@@ -377,7 +400,7 @@ CI_POSES = [(-1.10, -0.15, 0), (-1.10, 0.45, 180), (-0.80, -0.45, 90),
 
 
 def grid(xs=(-1.1, -0.8, -0.55, -0.35), ys=(-0.45, -0.15, 0.15, 0.45),
-         yaws=(0, 90, 180, -90), prior='fixed', seconds=70.0, room=False):
+         yaws=(0, 90, 180, -90), prior='none', seconds=70.0, room=False):
     """
     Dock from a grid of starting poses, the way a person parks the robot.
 
@@ -428,6 +451,6 @@ def main():
 if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == 'grid':
-        print_grid(grid(prior=sys.argv[2] if len(sys.argv) > 2 else 'fixed'))
+        print_grid(grid(prior=sys.argv[2] if len(sys.argv) > 2 else 'none'))
     else:
         main()

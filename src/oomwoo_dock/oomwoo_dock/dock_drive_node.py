@@ -23,6 +23,14 @@ by turning on the spot:
   BACK     reverse along the axis, steering on lateral and heading error
   REGROUP  pull back out to the staging point and line up again
 
+The staging point sits one robot diameter from the mouth. Every distance from
+0.30 to 0.55 m docks in the rig, but the far ones put the robot out in the room
+among the furniture, and it hit a dining table there. Coming in close costs some
+final accuracy (15.8 mm of lateral error against 9.2 mm from 0.55 m, against the
+25 mm the bay allows) and leaves only 0.13 m of reversing to correct a lateral
+offset, which is why the staging tolerance is tighter than the entry gate:
+turning on the spot cannot fix one.
+
 Two things the 2D rig (dock_harness) taught, each after a grid of starting poses
 failed: the approach must be able to drive BACKWARDS, because the staging point
 is often behind the robot and driving a loop around the dock means driving
@@ -67,8 +75,8 @@ DEFAULTS = {
     'lidar_offset_m': 0.0745,     # sensor ahead of the wheel axle
     'body_radius_m': 0.1745,
     'bay_depth_m': 0.240,         # mouth to the back face
-    'stage_x_m': -0.55,           # staging point, outside the mouth
-    'stage_tol_m': 0.04,
+    'stage_x_m': -0.35,           # staging point: one robot diameter out
+    'stage_tol_m': 0.02,          # tighter than the entry gate, deliberately
     'turn_tol_deg': 3.0,
     'entry_guard_x_m': -0.22,     # past this the bay walls are within reach...
     'entry_lateral_m': 0.025,     # ...so only enter this well centred
