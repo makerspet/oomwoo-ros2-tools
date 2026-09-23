@@ -15,13 +15,20 @@
 """
 Reverse the robot into the dock, using the detector's mouth pose.
 
-Four phases, because a differential-drive robot cannot cancel a lateral offset
+Five phases, because a differential-drive robot cannot cancel a lateral offset
 by turning on the spot:
 
+  SEARCH   spin in place until the dock is recognised
   GOTO     drive to a staging point on the bay axis, forwards OR backwards
   TURN     turn until the TAIL points into the bay
   BACK     reverse along the axis, steering on lateral and heading error
   REGROUP  pull back out to the staging point and line up again
+
+SEARCH exists because standing still and thinking does not help: when the dock
+is not recognisable from where the robot is parked, the answer is to turn and
+look again from a new viewpoint. The robot used to wait indefinitely instead,
+which looked exactly like a crash. A slow spin also sweeps the rear IR receivers across the
+dock's beacon, which is what gives the detector a bearing to start from.
 
 The staging point sits one robot diameter from the mouth. Every distance from
 0.30 to 0.55 m docks in the rig, but the far ones put the robot out in the room
@@ -45,6 +52,7 @@ which is why the estimate is kept in the body frame and moved by each command.
 
   subscribes  ~/dock_pose      geometry_msgs/PoseStamped  (from dock_detector)
   subscribes  odom             nav_msgs/Odometry          (to carry the estimate)
+  subscribes  ~/beacon_visible std_msgs/Bool              (optional; stops the spin)
   subscribes  ~/enable         std_msgs/Bool
   publishes   cmd_vel          geometry_msgs/Twist
   publishes   ~/state          std_msgs/String   GOTO/TURN/BACK/REGROUP/DONE/IDLE
@@ -90,7 +98,11 @@ DEFAULTS = {
     'k_lateral': 2.5,
     'k_heading': 1.8,
     'omega_max': 0.8,
-    'pose_timeout_s': 3.0,        # no fix for this long: stop
+    'pose_timeout_s': 3.0,        # no fix for this long: go back to searching
+    'search_omega': 0.5,          # rad/s, spinning to look for the dock
+    'search_omega_beacon': 0.0,   # beacon in view: stop and let the LiDAR fit
+    'search_max_turns': 2.0,      # give up after this much spinning
+    'confirmations': 2,           # accepted fixes needed before moving
     'auto_start': True,
     'pub_hz': 20.0,
 }
@@ -110,6 +122,9 @@ class DockDrive(Node):
         self.prefer = None            # last drive direction, for hysteresis
         self.est = None               # dock pose in the BODY frame
         self.t_fix = None
+        self.searched = 0.0           # radians spun while looking
+        self.confirms = 0             # accepted fixes in a row
+        self.beacon_visible = False
         self.odom = None
         self.cmd = Twist()
         self._docked_val = None
@@ -123,8 +138,10 @@ class DockDrive(Node):
         self.create_subscription(PoseStamped, '~/dock_pose', self._on_pose, 10)
         self.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self.create_subscription(Bool, '~/enable', self._on_enable, 10)
+        self.create_subscription(
+            Bool, '~/beacon_visible', self._on_beacon, 10)
         self.create_timer(1.0 / max(self._p('pub_hz'), 1.0), self._tick)
-        self._set_state('GOTO' if self.enabled else 'IDLE')
+        self._set_state('SEARCH' if self.enabled else 'IDLE')
 
     def _p(self, name):
         return self.get_parameter(name).value
@@ -142,7 +159,12 @@ class DockDrive(Node):
 
     def _on_enable(self, msg: Bool) -> None:
         self.enabled = bool(msg.data)
-        self._set_state('GOTO' if self.enabled else 'IDLE')
+        self.searched = 0.0
+        self._set_state('SEARCH' if self.enabled else 'IDLE')
+
+    def _on_beacon(self, msg: Bool) -> None:
+        """Record whether the dock's beacon is in view of both receivers."""
+        self.beacon_visible = bool(msg.data)
 
     def _on_pose(self, msg: PoseStamped) -> None:
         """Dock pose in the SCAN frame; shift it to the body frame."""
@@ -152,6 +174,7 @@ class DockDrive(Node):
         t_l_d = (msg.pose.position.x, msg.pose.position.y, yaw)
         self.est = mul((self._p('lidar_offset_m'), 0.0, 0.0), t_l_d)
         self.t_fix = self.get_clock().now()
+        self.confirms += 1
 
     def _on_odom(self, msg: Odometry) -> None:
         """Carry the estimate between fixes using the robot's own motion."""
@@ -169,22 +192,46 @@ class DockDrive(Node):
         if not self.enabled or self.state in ('IDLE', 'DONE'):
             self._send(0.0, 0.0)
             return
-        if self.est is None or self.t_fix is None:
+        age = (None if self.t_fix is None
+               else (self.get_clock().now() - self.t_fix).nanoseconds * 1e-9)
+        lost = self.est is None or age is None or age > self._p('pose_timeout_s')
+        if lost and self.state not in ('SEARCH', 'DONE'):
+            # Hold, do not spin. Searching is for starting: re-entering it every
+            # time a fit is missed makes the robot bounce between driving and
+            # spinning and never arrive (4 of 12 docked with that rule, 10
+            # without). Fits are intermittent and odometry covers the gaps. Near
+            # the mouth spinning would also sweep the robot through the dock.
+            self.get_logger().warn(
+                'no dock fix for %.1f s; holding' % (age or 0.0),
+                throttle_duration_sec=2.0)
             self._send(0.0, 0.0)
             return
-        age = (self.get_clock().now() - self.t_fix).nanoseconds * 1e-9
-        if age > self._p('pose_timeout_s'):
-            self.get_logger().warn('no dock fix for %.1f s; holding' % age,
-                                   throttle_duration_sec=2.0)
-            self._send(0.0, 0.0)
-            return
+        if lost:
+            self.confirms = 0
+        if self.state == 'SEARCH':
+            # One accepted fix is not enough to drive on: a fit can pass every
+            # gate and still be 0.3 m out in clutter, and the robot then drives
+            # into the dock's flank. A second confirmation costs half a second.
+            if not lost and self.confirms >= self._p('confirmations'):
+                self.searched = 0.0
+                self._set_state('GOTO')
+            else:
+                self._search()
+                return
 
         x, y, th = inv(self.est)            # robot pose in the DOCK frame
         stage = (self._p('stage_x_m'), 0.0)
         if self.state == 'GOTO':
-            # too close to line up safely: pull out along the axis first
-            target = (stage if x < self._p('stage_x_m') + 0.05
-                      else (self._p('stage_x_m') - 0.20, y))
+            # Get onto the bay axis FIRST, at whatever distance the robot
+            # already stands, then close along it. Driving straight at the
+            # staging point cuts diagonally across the dock's face, and with a
+            # slightly wrong fix that clips a side plate.
+            if abs(y) > 0.06:
+                target = (min(x, self._p('stage_x_m') - 0.10), 0.0)
+            elif x > self._p('stage_x_m') + 0.05:
+                target = (self._p('stage_x_m') - 0.20, 0.0)
+            else:
+                target = stage
             v, w, done = self._goto(target, x, y, th)
             if done and target == stage:
                 self._set_state('TURN')
@@ -234,6 +281,27 @@ class DockDrive(Node):
                   + self._p('k_heading') * wrap(th - math.pi))
             self._send(-self._p('v_back'),
                        _clamp(w, -self._p('omega_max'), self._p('omega_max')))
+
+    def _search(self) -> None:
+        """
+        Spin in place until the dock is recognised; stop once the beacon shows.
+
+        Standing still gains nothing: whatever the robot could not recognise from
+        this pose, it will not recognise a second later. Turning changes the
+        viewpoint, sweeps the rear receivers past the beacon, and costs nothing
+        but time.
+        """
+        if self.searched > self._p('search_max_turns') * 2.0 * math.pi:
+            self.get_logger().warn(
+                'searched %.1f turns without finding the dock; stopping'
+                % (self.searched / (2.0 * math.pi)), throttle_duration_sec=5.0)
+            self._set_state('IDLE')
+            self._send(0.0, 0.0)
+            return
+        omega = (self._p('search_omega_beacon') if self.beacon_visible
+                 else self._p('search_omega'))
+        self.searched += abs(omega) / max(self._p('pub_hz'), 1.0)
+        self._send(0.0, omega)
 
     def _goto(self, target, x, y, th):
         """

@@ -35,7 +35,9 @@ lines up.
 
   subscribes  scan             sensor_msgs/LaserScan  (SensorData QoS)
   subscribes  ~/prior          geometry_msgs/PoseStamped (optional, scan frame)
-  subscribes  ~/beacon_bearing std_msgs/Float32       (optional, radians)
+  subscribes  ~/beacon_bearing std_msgs/Float32  (optional, radians, base_link
+                                                 axes, from the receivers)
+  subscribes  odom             nav_msgs/Odometry     (carries estimates while moving)
   publishes   ~/dock_pose   geometry_msgs/PoseStamped  (mouth centre, scan frame)
   publishes   ~/cost        std_msgs/Float32        (fit cost; lower is better)
   publishes   ~/coverage    std_msgs/Float32        (share of the template seen)
@@ -46,9 +48,11 @@ import math
 
 from geometry_msgs.msg import Point, PoseStamped
 
+from nav_msgs.msg import Odometry
+
 import numpy as np
 
-from oomwoo_dock.dock_template import accept, DockFitter, template, wrap
+from oomwoo_dock.dock_template import accept, DockFitter, inv, mul, template, wrap
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -74,6 +78,10 @@ DEFAULTS = {
     'agree_m': 0.06,              # when lost, two scans must land this close...
     'agree_deg': 8.0,             # ...and this well aligned
     'beacon_range_m': 0.8,        # assumed range when only a bearing is known
+    'beacon_x_m': 0.235,          # the beacon, from the mouth into the bay
+    'beacon_agree_deg': 8.0,      # a fit must put the beacon this near its bearing
+    'scan_x_m': 0.0745,           # the scan origin, ahead of base_link
+    'beacon_rx_x_m': -0.164,      # the receivers, where the bearing is taken
     'stale_after_s': 1.5,         # no accepted fix for this long: hunt the scan
     'min_points': 20,             # fewer than this in the gate: no attempt
     'use_fallback_prior': False,  # trust prior_* below when nothing else is known
@@ -101,6 +109,9 @@ class DockDetector(Node):
         self.t_fix = None             # time of the last ACCEPTED fit
         self.pending = None           # a fit waiting for a second opinion
         self.beacon = None            # bearing to the dock's beacon, if any
+        self.t_beacon = None
+        self.hint_src = None          # what the last hint came from
+        self.t_odom = None
         self.frame = 'base_scan'
         self.pose_pub = self.create_publisher(PoseStamped, '~/dock_pose', 10)
         self.cost_pub = self.create_publisher(Float32, '~/cost', 10)
@@ -111,6 +122,7 @@ class DockDetector(Node):
         self.create_subscription(PoseStamped, '~/prior', self._on_prior, 10)
         self.create_subscription(
             Float32, '~/beacon_bearing', self._on_beacon, 10)
+        self.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self.get_logger().info('dock_detector: fitting the dock cross-section')
 
     def _p(self, name):
@@ -126,6 +138,36 @@ class DockDetector(Node):
     def _on_beacon(self, msg: Float32) -> None:
         """Bearing to the dock's IR beacon, in the scan frame."""
         self.beacon = float(msg.data)
+        self.t_beacon = self.get_clock().now()
+
+    def _beacon(self):
+        """Return the beacon bearing if it is fresh, else None."""
+        if self.beacon is None or self.t_beacon is None:
+            return None
+        age = (self.get_clock().now() - self.t_beacon).nanoseconds * 1e-9
+        return self.beacon if age < self._p('stale_after_s') else None
+
+    def _on_odom(self, msg: Odometry) -> None:
+        """
+        Carry the held estimates through the robot's own motion.
+
+        Both the accepted prior and the candidate awaiting a second opinion live
+        in the sensor frame, so a turning robot moves them. Without this, a robot
+        spinning to look for the dock can never confirm a fit: it rotates about
+        14 degrees between detections, and two fits of the same dock look like
+        two different docks.
+        """
+        now = self.get_clock().now()
+        if self.t_odom is not None:
+            dt = (now - self.t_odom).nanoseconds * 1e-9
+            if 0.0 < dt < 0.5:
+                step = (msg.twist.twist.linear.x * dt, 0.0,
+                        msg.twist.twist.angular.z * dt)
+                if self.prior is not None:
+                    self.prior = mul(inv(step), self.prior)
+                if self.pending is not None:
+                    self.pending = mul(inv(step), self.pending)
+        self.t_odom = now
 
     def _hint(self):
         """
@@ -136,20 +178,49 @@ class DockDetector(Node):
         than no guess, because the scan gets gated around it.
         """
         now = self.get_clock().now()
+        self.hint_src = 'prior'
         if self.prior is not None and self.t_prior is not None:
             age = (now - self.t_prior).nanoseconds * 1e-9
             if age < self._p('hold_prior_s'):
                 return self.prior
-        if self.beacon is not None:
-            # a beacon gives bearing, not range: assume a plausible range and
-            # point the dock's mouth back towards the robot
+        beacon = self._beacon()
+        if beacon is not None:
+            # a beacon gives bearing, not range: assume a plausible range. The
+            # template's +x runs INTO the bay, away from the robot, so along the
+            # bearing; pointing it back at the robot seeded every fit reversed.
+            self.hint_src = 'beacon'
             r = self._p('beacon_range_m')
-            return (r * math.cos(self.beacon), r * math.sin(self.beacon),
-                    wrap(self.beacon + math.pi))
+            x = (self._p('beacon_rx_x_m') + r * math.cos(beacon)
+                 - self._p('scan_x_m'))
+            y = r * math.sin(beacon)
+            return (x, y, math.atan2(y, x))
         if self._p('use_fallback_prior'):
             return (self._p('prior_x'), self._p('prior_y'),
                     math.radians(self._p('prior_yaw_deg')))
         return None
+
+    def _judge(self, got, beacon) -> bool:
+        """
+        Accept a fit on its own merits, or with a beacon that vouches for it.
+
+        A fit that puts the beacon where the receivers see it need not show
+        both sides of the bay. From well off axis the far side plate hides
+        behind the near one, and at 0.9 m and 25 degrees off the rig never
+        moved. Dropping the test outright let in the phantom it exists for --
+        the wall behind the dock plus one real plate, 0.2 m out -- whose beacon
+        point is some 12 degrees off the bearing at that range.
+        """
+        if got is None:
+            return False
+        side_min = self._p('min_side_coverage')
+        if beacon is not None:
+            bx, by, _ = mul(got.pose, (self._p('beacon_x_m'), 0.0, 0.0))
+            bx += self._p('scan_x_m') - self._p('beacon_rx_x_m')
+            off = wrap(math.atan2(by, bx) - beacon)
+            if abs(off) < math.radians(self._p('beacon_agree_deg')):
+                side_min = 0.0
+        return accept(got, self._p('max_cost'), self._p('min_coverage'),
+                      self._p('max_intrusions'), side_min)
 
     def _on_scan(self, msg: LaserScan) -> None:
         now = self.get_clock().now()
@@ -172,6 +243,7 @@ class DockDetector(Node):
         # look at them, leaving 9-23 points of whatever furniture sat ahead.
         now_s = now.nanoseconds * 1e-9
         hint = self._hint()
+        all_pts = pts
         if hint is not None:
             gate = self._p('gate_radius_m')
             if gate > 0.0 and len(pts):
@@ -184,12 +256,21 @@ class DockDetector(Node):
 
         got = (self.fit.detect(pts, hint) if hint is not None
                else self.fit.search(pts))
+        beacon = self._beacon()
+        ok = self._judge(got, beacon)
+        if not ok and hint is not None and self.hint_src == 'beacon':
+            # A bearing has no range, so the seed can be well short or long:
+            # parked 0.35 m off with its tail in, the beacon is 0.45 m away
+            # against 0.8 assumed, and the rig held still for good. Hunt the
+            # whole scan too, and let the beacon judge what it finds.
+            alt = self.fit.search(all_pts)
+            if self._judge(alt, beacon):
+                got, ok = alt, True
         if got is None:
             self._publish_cost(None)
             return
         self._publish_cost(got.cost, got.coverage)
-        if not accept(got, self._p('max_cost'), self._p('min_coverage'),
-                      self._p('max_intrusions'), self._p('min_side_coverage')):
+        if not ok:
             self.get_logger().info(
                 'dock fit rejected: cost %.5f (max %.5f), coverage %.2f (min'
                 ' %.2f), sides %.2f (min %.2f), %d in the bay (max %d), %d points'

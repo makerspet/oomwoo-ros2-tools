@@ -43,6 +43,7 @@ setup(
     entry_points={
         'console_scripts': [
             'ground_truth = oomwoo_sim_support.ground_truth_node:main',
+            'ir_beacon_sim = oomwoo_sim_support.ir_beacon_sim_node:main',
             'coverage_meter = oomwoo_sim_support.coverage_meter_node:main',
             'kidnap_injector = oomwoo_sim_support.kidnap_injector_node:main',
             'initialpose_pub = oomwoo_sim_support.initialpose_pub_node:main',

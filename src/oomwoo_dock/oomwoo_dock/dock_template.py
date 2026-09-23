@@ -76,7 +76,9 @@ CAP_M = 0.05             # distance beyond which a point stops counting
 SAMPLE_STEP_M = 0.02     # template sampling, for the coverage check
 COVER_TOL_M = 0.03       # a template sample counts as covered within this
 BAY_CLEAR_X = (0.02, 0.22)   # the bay volume the robot will occupy...
-BAY_CLEAR_Y = 0.190          # ...which must be EMPTY for this to be a dock
+BAY_CLEAR_Y = 0.170          # ...which must be EMPTY for this to be a dock.
+# 30 mm inside the plates' inner faces, not 10: at 10 mm, range noise alone put a
+# correct fit's own plate returns 'inside the bay' and rejected it.
 MAX_INTRUSIONS = 2           # allow a couple of stray returns, no more
 
 DockFit = collections.namedtuple(

@@ -132,16 +132,16 @@ def test_docks_from_every_start(index, name, kw):
     """
     Drive the whole manoeuvre; it must seat without touching the dock.
 
-    The prior stands in for the dock's IR beacon or its recorded map position,
-    which the robot will have in service. Docking with NO prior at all is a
-    harder problem and has its own test below.
+    With the dock's IR beacon: the robot turns until its rear receivers see
+    it, then holds still while the LiDAR fits the dock the beacon points at.
+    Docking with the LiDAR alone has its own test below.
 
     The seed is the scenario's index, not hash(name): Python randomises string
     hashes per process, so that made this test pass or fail depending on the run.
     The time budget allows for a regroup, which the manoeuvre is entitled to do
     when it arrives at the mouth misaligned.
     """
-    m = harness.run(seed=index, seconds=90.0, prior='near', **kw)
+    m = harness.run(seed=index, seconds=90.0, prior='beacon', **kw)
     assert m['ok'], '%s: %s (lateral %.1f mm, yaw %.2f deg)' % (
         name, m['why'], m['lateral'] * 1e3, math.degrees(m['yaw_err']))
     assert abs(m['lateral']) < CAPTURE_M, '%s: lateral %.1f mm of %.1f mm' % (
@@ -163,9 +163,9 @@ def test_docks_from_parked_poses_without_any_prior():
     """
     Park the robot anywhere near the dock, facing anywhere, with no hint at all.
 
-    With nothing known the robot holds still until it has found the dock, so the
-    poses it cannot see from simply do not dock. What must never happen is that
-    it moves on a guess: a robot with no fixes once drove the fallback prior
+    With nothing known the robot spins in place until it has found the dock, so
+    the poses it cannot see from simply do not dock. What must never happen is
+    that it moves on a guess: a robot with no fixes once drove the fallback prior
     straight into the dock.
 
     This is the case a grid of starting poses exposed and a fixed "the dock is
@@ -173,9 +173,10 @@ def test_docks_from_parked_poses_without_any_prior():
     the whole scan for the dock, refusing to enter the mouth unless lined up, and
     driving to the staging point backwards when it lies behind, took the same
     grid to 58. Measured on these twelve poses in a FURNISHED room -- walls, a
-    dining table and two chairs, so the scan is mostly furniture: all twelve
-    dock, none touch the dock, worst lateral error 12.3 mm of the 25.5 mm the
-    bay allows.
+    dining table and two chairs, so the scan is mostly furniture -- with the
+    robot spinning in place to look and moving only after two confirmed fits:
+    10 dock, none touch the dock. The two that do not are parked side-on, 0.35 m
+    off the dock's flank, where the bay is simply not visible.
 
     The gate is deliberately below the measured figure. A robot that can do this
     with no beacon at all has margin to spare once the beacon is fitted.
@@ -192,17 +193,18 @@ def test_docks_from_parked_poses_without_any_prior():
 
 def test_docks_from_parked_poses_with_a_beacon():
     """
-    The same parked poses, with the hint a beacon or map position provides.
+    The same parked poses, with the dock's IR beacon.
 
-    Measured in the furnished room: 12 of 12, none touching the dock, worst
-    lateral error 15.2 mm. A hint mainly buys TIME -- without one the robot sits
-    and searches until it recognises the dock, which from some parked poses takes
-    several seconds of looking.
+    Measured in the furnished room: 11 of 12, none touching the dock, worst
+    lateral error 10.9 mm. The one that does not is parked side-on beside the
+    dock's flank, outside the +-40 degree wedge the recessed beacon lights.
+    The beacon's job is identity: a fit that puts the beacon on the measured
+    bearing is believed even when the far side of the bay is hidden.
     """
     docked = 0
     for i, pose in enumerate(harness.CI_POSES):
-        m = harness.run(seed=i, start=pose, prior='near', seconds=90.0, room=True)
+        m = harness.run(seed=i, start=pose, prior='beacon', seconds=90.0, room=True)
         assert m['why'] != 'hit the dock', 'hit the dock from %s' % (pose,)
         docked += m['ok']
-    assert docked >= 11, 'only %d of %d parked poses docked' % (
+    assert docked >= 10, 'only %d of %d parked poses docked' % (
         docked, len(harness.CI_POSES))

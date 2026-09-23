@@ -54,6 +54,8 @@ STAGE_X_M = -0.35
 # the spot cannot fix a lateral offset, and from 0.35 m there is only 0.13 m of
 # reversing left to correct one.
 STAGE_TOL_M = 0.02
+SEARCH_OMEGA = 0.5         # rad/s spin while looking for the dock
+SEARCH_MAX_TURNS = 2.0
 T_BL = (LIDAR_OFFSET_M, 0.0, 0.0)
 
 
@@ -219,8 +221,17 @@ def control(state, x, y, th, attempts, prefer=None, stage_x=STAGE_X_M,
     """
     stage = (stage_x, 0.0)
     if state == 'GOTO':
-        # too close to line up safely: pull out along the axis first
-        target = stage if x < stage_x + 0.05 else (stage_x - 0.20, y)
+        # Get onto the bay axis FIRST, at whatever distance the robot already
+        # stands, then close along it. Driving straight at the staging point
+        # cuts diagonally across the dock's face, and with a slightly wrong fix
+        # that clips a side plate: measured at (-0.06, +0.39), 3 mm inside the
+        # left plate. Coming down the axis keeps the robot clear of both flanks.
+        if abs(y) > 0.06:
+            target = (min(x, stage_x - 0.10), 0.0)
+        elif x > stage_x + 0.05:
+            target = (stage_x - 0.20, 0.0)      # too close: pull out first
+        else:
+            target = stage
         v, w, done = goto_point(target, x, y, th, prefer=prefer, tol=stage_tol)
         if done and target == stage:
             return 0.0, 0.0, 'TURN', attempts
@@ -260,9 +271,67 @@ def seated(pose_in_dock):
     return pose_in_dock[0] + BODY_RADIUS_M >= BAY_DEPTH_M - SEAT_MARGIN_M
 
 
+BEACON_X_M = 0.235         # the beacon, recessed at the back of the bay
+BEACON_HALF_DEG = 40.0     # the recess lets its light out only this far off axis
+BEACON_RANGE_M = 3.0
+RX_HALF_DEG = 25.0         # both rear receivers see it within this of astern
+BEACON_SIGMA_DEG = 3.0     # bearing noise, from the receivers' balance
+BEACON_ASSUME_M = 0.8      # a bearing has no range: assume this one
+RX_X_M = -0.164            # the receivers, where the bearing is taken
+BEACON_AGREE_DEG = 8.0     # a fit must put the beacon this close to its bearing
+
+
+def beacon_bearing(pose):
+    """
+    Bearing to the dock's beacon in the body frame, or None when out of view.
+
+    The beacon sits at the back of the bay, so the bay walls let its light out
+    only within BEACON_HALF_DEG of the axis. The receivers face backwards, so
+    the robot must also have its tail towards the dock. This mirrors
+    ir_beacon_sim, which does the same with the receivers' actual lobes.
+    """
+    x, y, th = pose
+    x, y = x + RX_X_M * math.cos(th), y + RX_X_M * math.sin(th)
+    off_axis = abs(wrap(math.atan2(y, x - BEACON_X_M) - math.pi))
+    if (off_axis > math.radians(BEACON_HALF_DEG)
+            or math.hypot(x - BEACON_X_M, y) > BEACON_RANGE_M):
+        return None
+    b = wrap(math.atan2(-y, BEACON_X_M - x) - th)
+    if abs(wrap(b - math.pi)) > math.radians(RX_HALF_DEG):
+        return None
+    return wrap(b + math.radians(random.gauss(0.0, BEACON_SIGMA_DEG)))
+
+
+def beacon_agrees(cand, beacon):
+    """
+    Report whether a fit (body frame) puts the beacon where the receivers see it.
+
+    This is what the beacon buys. From well off the bay axis the far side plate
+    hides behind the near one, so the both-sides test rejects true fits -- 20 to
+    40 mm out -- and at 0.9 m and 25 degrees off the robot never moved. Dropping
+    that test alone let in the phantom it exists for, the wall behind the dock
+    plus one real plate, 0.2 m out; the robot drove on it into the dock. The
+    phantom's beacon point is some 12 degrees off the measured bearing at that
+    range, the truth's within the bearing noise.
+    """
+    bx, by, _ = mul(cand, (BEACON_X_M, 0.0, 0.0))
+    return abs(wrap(math.atan2(by, bx - RX_X_M) - beacon)) < math.radians(BEACON_AGREE_DEG)
+
+
+def judge(got, beacon):
+    """Accept a fit on its own, or with a beacon that vouches for it."""
+    if got is None:
+        return False, None
+    cand = mul(T_BL, got.pose)
+    ok = accept(got) or (beacon is not None
+                         and accept(got, min_side_coverage=0.0)
+                         and beacon_agrees(cand, beacon))
+    return ok, cand
+
+
 def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         slip=0.02, back_wall=True, chair=False, room=False,
-        detect_every=DETECT_EVERY, start=None, prior='fixed', debug=False,
+        detect_every=DETECT_EVERY, start=None, prior='none', debug=False,
         stage_x=STAGE_X_M, stage_tol=STAGE_TOL_M):
     """
     One docking attempt. Returns a metrics dict.
@@ -271,14 +340,16 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
     otherwise the robot starts `dist` from the mouth, `bearing_deg` off the bay
     axis, with `yaw_deg` of heading error.
 
-    `prior` picks what the robot starts out knowing:
-      'none'  nothing at all: it must find the dock in the scan before it moves
-      'near'  a hint within 0.1 m and 15 deg, as a beacon bearing or a recorded
-              map position would give
+    `prior` picks what the robot has to go on:
+      'none'    the LiDAR alone: it must recognise the dock in the scan
+      'beacon'  the dock's IR beacon as well, seen by the rear receivers
 
-    With no hint the robot HOLDS STILL until a fit is accepted, which is what
-    dock_drive does. An earlier version let it drive on an unverified guess, and
-    a robot with no fixes at all drove that guess straight into the dock.
+    Either way the robot SPINS IN PLACE until it has confirmed a fit, which is
+    what dock_drive does: whatever it cannot recognise from this pose it will
+    not recognise by waiting, but turning changes the viewpoint. With a beacon it
+    stops turning once the beacon is in view and lets the LiDAR fit the dock the
+    beacon points at. It never drives on an unverified guess -- an earlier
+    version did, and a robot with no fixes drove that guess into the dock.
     """
     random.seed(seed)
     fit = DockFitter()
@@ -289,16 +360,14 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         b = math.radians(bearing_deg)
         t_w_b = (-dist * math.cos(b), -dist * math.sin(b),
                  wrap(b + math.radians(yaw_deg)))
-    if prior == 'near':
-        est = mul(inv(t_w_b), (0.0, 0.0, 0.0))
-        est = (est[0] + random.uniform(-0.1, 0.1),
-               est[1] + random.uniform(-0.1, 0.1),
-               wrap(est[2] + math.radians(random.uniform(-15.0, 15.0))))
-    else:
-        est = None                  # nothing known: hold still and look
+    est = None                      # the dock in the body frame, once confirmed
+    beacon = None                   # the beacon's bearing, while in view
     dt = 1.0 / SCAN_HZ
     state = 'GOTO'
     detects = 0
+    searched = 0.0
+    confirms = 0                # accepted fits so far; start on the second
+    searching = True
     attempts = 0
     prefer = None
     stale = 99                      # cycles since the last accepted fix
@@ -307,22 +376,44 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         if step % detect_every == 0:
             t_w_l = mul(t_w_b, T_BL)
             pts = scan(*place(segs, circs, inv(t_w_l)))
-            # with a fresh fix, refine it; otherwise hunt the whole scan
-            got = (fit.detect(pts, mul(inv(T_BL), est))
-                   if est is not None and stale < 3 else fit.search(pts))
+            beacon = beacon_bearing(t_w_b) if prior == 'beacon' else None
+            # with a fresh fix, refine it; with a beacon, look where it points;
+            # otherwise hunt the whole scan
+            if est is not None and stale < 3:
+                hint = est
+            elif beacon is not None:
+                # the bay runs along the line of sight, away from the robot
+                hx = RX_X_M + BEACON_ASSUME_M * math.cos(beacon)
+                hy = BEACON_ASSUME_M * math.sin(beacon)
+                hint = (hx, hy, math.atan2(hy, hx))
+            else:
+                hint = None
+            got = (fit.detect(pts, mul(inv(T_BL), hint)) if hint is not None
+                   else fit.search(pts))
+            ok, cand = judge(got, beacon)
+            if not ok and beacon is not None and hint is not est:
+                # the bearing has no range, so the seed can be well short or
+                # long: parked 0.35 m off, tail in, the beacon is 0.45 m away
+                # against 0.8 assumed, and the robot held still for good. Hunt
+                # the whole scan too, and let the beacon judge what it finds.
+                alt = fit.search(pts)
+                alt_ok, alt_cand = judge(alt, beacon)
+                if alt_ok:
+                    got, ok, cand = alt, alt_ok, alt_cand
             if debug and step % (detect_every * 4) == 0:
                 true_d = mul(inv(t_w_l), (0.0, 0.0, 0.0))
-                print('   t=%4.1f %-7s %s cost=%.5f cover=%.2f side=%.2f intr=%2d err=%.3f'
-                      % (step * dt, state,
-                         'ACCEPT' if accept(got) else 'reject ',
+                print('   t=%4.1f %-7s %s cost=%.5f cover=%.2f side=%.2f intr=%2d'
+                      ' err=%.3f beacon=%s'
+                      % (step * dt, state, 'ACCEPT' if ok else 'reject ',
                          got.cost if got else 9.9,
                          got.coverage if got else 0.0,
                          got.side_cover if got else 0.0,
                          got.intrusions if got else -1,
                          math.hypot(got.pose[0] - true_d[0],
-                                    got.pose[1] - true_d[1]) if got else 9.9))
-            if accept(got):
-                cand = mul(T_BL, got.pose)
+                                    got.pose[1] - true_d[1]) if got else 9.9,
+                         '%.0f' % math.degrees(beacon) if beacon is not None
+                         else '-'))
+            if ok:
                 if est is not None and stale < 3:
                     # tracking: a fit that jumps away from the running estimate
                     # is an impostor. The dock against a wall offers a second,
@@ -335,14 +426,48 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
                 if good:
                     est = cand
                     detects += 1
+                    confirms += 1
                     stale = 0
                 else:
                     stale += 1
                 pending = cand
             else:
+                # a missed fit is not a lost dock: keep the count, as the node
+                # does. Resetting it here made two confirmations nearly
+                # impossible while spinning, and the robot gave up after two
+                # turns: 4 of 12 docked.
                 pending = None
                 stale += 1
-        if est is None:            # no fix yet: the robot does not move
+        # Confirmation gates STARTING, not continuing. One accepted fit is not
+        # enough to drive on -- a fit can pass every gate and still be 0.3 m out
+        # in clutter, and the robot then drives into the dock's flank, measured
+        # at (-0.06, +0.39) inside a side plate. Requiring two costs half a
+        # second. Requiring them continuously, which was the first attempt,
+        # stops the robot dead on any single rejected frame: 0 of 12 docked.
+        if searching and est is not None and confirms >= 2:
+            searching = False
+        # Searching is for STARTING. Re-entering it whenever a fit is missed
+        # makes the robot bounce between driving and spinning and never arrive:
+        # 4 of 12 docked with that rule, against 10 without it. Fits are
+        # intermittent by nature, and odometry carries the estimate through the
+        # gaps, so a missed fit is not a lost dock.
+        if searching and beacon is not None:
+            # beacon in view: stop turning, it would only sweep the receivers
+            # off it again, and let the LiDAR fit the dock it points at
+            continue
+        if searching:
+            searched += SEARCH_OMEGA / SCAN_HZ
+            if searched > SEARCH_MAX_TURNS * 2.0 * math.pi:
+                break
+            spin = SEARCH_OMEGA / SCAN_HZ
+            t_w_b = mul(t_w_b, (0.0, 0.0, spin))
+            if pending is not None:
+                # the candidate is in the BODY frame, so it has to be carried
+                # through the robot's own turn or the next fit can never agree
+                # with it -- which is exactly what a spinning search does
+                pending = mul(inv((0.0, 0.0, spin)), pending)
+            if est is not None:
+                est = mul(inv((0.0, 0.0, spin)), est)
             continue
         x, y, th = inv(est)
         v, w, state, attempts = control(state, x, y, th, attempts, prefer,
@@ -356,6 +481,8 @@ def run(dist=0.75, bearing_deg=0.0, yaw_deg=0.0, seed=0, seconds=60.0,
         w_a = w * (1.0 + random.gauss(0.0, slip)) + random.gauss(0.0, 0.004)
         t_w_b = mul(t_w_b, (v_a * dt, 0.0, w_a * dt))
         est = mul(inv((v * dt, 0.0, w * dt)), est)        # odometry, no slip
+        if pending is not None:
+            pending = mul(inv((v * dt, 0.0, w * dt)), pending)
         true_pose = inv(mul(inv(t_w_b), (0.0, 0.0, 0.0)))
         if dock_contact(true_pose):
             return {'ok': False, 'why': 'hit the dock', 'state': state,
@@ -405,7 +532,7 @@ def grid(xs=(-1.1, -0.8, -0.55, -0.35), ys=(-0.45, -0.15, 0.15, 0.45),
     Dock from a grid of starting poses, the way a person parks the robot.
 
     Returns a list of (x, y, yaw, metrics). Poses inside the dock's footprint are
-    skipped. Yaw is measured in the dock frame: 180 deg faces the dock.
+    skipped. Yaw is measured in the dock frame: 0 deg faces the dock.
     """
     out = []
     for i, x in enumerate(xs):
