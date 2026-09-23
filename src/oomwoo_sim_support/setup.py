@@ -54,6 +54,7 @@ setup(
             'oomwoo_sim_support.relocalize_on_lost_node:main',
             'reloc_regression_runner = oomwoo_sim_support.reloc_regression_runner:main',
             'coverage_regression_runner = oomwoo_sim_support.coverage_regression_runner:main',
+            'bumper_probe = oomwoo_sim_support.bumper_probe:main',
         ],
     },
 )
