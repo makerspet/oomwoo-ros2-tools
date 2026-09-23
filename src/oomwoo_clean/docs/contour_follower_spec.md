@@ -124,8 +124,10 @@ the robot onto that angle:
      its rightmost point is 0.1745 m off center, so `standoff > 0.1745 + gap`.
   3. The **side brush** (extends a few cm past the body) should reach the edge
      strip.
-- **Value: 0.23 m.** What touches first is not the body but the bumper, a ring of
-  10 mm facets centred on the body radius whose corners reach **0.1814 m**. At the
+- **Value: 0.23 m.** (Since then the bumper has been made flush with the body, so
+  the robot is a plain circle of 0.1745 m and every margin below grows by 7 mm.)
+  What touches first is not the body but the bumper, then a ring of
+  10 mm facets centred on the body radius whose corners reached **0.1814 m**. At the
   original 0.20 m that left under 2 cm, and a Gazebo run halted on a bump just
   after a concave corner with the body centre 0.18 m from the wall. Swept on the
   test harness (worst margin to the bumper, across room, box, wall end, legs,

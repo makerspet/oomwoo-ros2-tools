@@ -41,12 +41,12 @@ import math
 import random
 
 BODY_RADIUS_M = 0.1745      # oomwoo-one body, base_diameter/2
-# What actually touches first: the bumper is a ring of 10 mm-thick flat facets
-# centred ON the body radius, so its outer face stands 5 mm proud, and each
-# facet's corners (1.15x the arc chord wide) reach further still. A Gazebo run
-# halted on a bump with the body centre 0.18 m from the wall, which the body
-# radius alone called a clear pass.
-CONTACT_RADIUS_M = 0.1814
+# What touches first: the bumper, a ring of flat facets. Since the bumper was
+# made flush with the body (oomwoo-one), the facets' corners land exactly on
+# the body radius, so the robot's outline is a plain circle of this radius.
+# It used to stand 5 mm proud and reach 0.1814 m, which is why a Gazebo run
+# once halted on a bump with the body centre 0.18 m from the wall.
+CONTACT_RADIUS_M = 0.1745
 LIDAR_OFFSET_M = 0.0745     # LiDAR ahead of the wheel axle
 BEAMS = 360
 RANGE_SIGMA_M = 0.01        # matches the sim LiDAR's noise

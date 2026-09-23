@@ -89,7 +89,7 @@ FLAT_RADIUS_M = 2.0
 
 DEFAULTS = {
     'follow_side': 'right',        # 'right' or 'left'
-    'standoff_m': 0.23,            # body centre to surface; bumper reaches 0.181
+    'standoff_m': 0.23,            # body centre to surface; flush bumper reaches 0.1745
     'body_offset_m': 0.0745,       # LiDAR ahead of the wheel axle; = URDF lidar_center_offset
     'use_body_clearance': True,    # measure the standoff at the body centre, not the LiDAR
     'v_nominal': 0.15,             # m/s cruise
