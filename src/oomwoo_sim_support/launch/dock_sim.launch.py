@@ -19,7 +19,8 @@ beacon bearing seeds the dock detector, and once the beacon is in view the searc
 spin stops, so the LiDAR fits the dock from where the robot already is. On
 the real robot the receiver driver publishes the same two topics instead.
 
-The dock pose defaults to kitchen_dining's vacuum_dock.
+The dock pose defaults to kitchen_dining's vacuum_dock: its MOUTH, with yaw
+pointing into the bay (see ir_beacon_sim), not the model's origin.
 """
 
 import os
@@ -40,9 +41,10 @@ def generate_launch_description():
         get_package_share_directory('oomwoo_dock'), 'launch', 'dock.launch.py')
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('dock_x', default_value='-2.45'),
+        DeclareLaunchArgument('dock_x', default_value='-2.11'),
         DeclareLaunchArgument('dock_y', default_value='-0.5'),
-        DeclareLaunchArgument('dock_yaw_deg', default_value='90.0'),
+        DeclareLaunchArgument('dock_yaw_deg', default_value='180.0'),
+        DeclareLaunchArgument('exit_when_done', default_value='true'),
         Node(
             package='oomwoo_sim_support',
             executable='ir_beacon_sim',
@@ -61,6 +63,9 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(dock_launch),
-            launch_arguments={'use_sim_time': use_sim_time}.items(),
+            launch_arguments={
+                'use_sim_time': use_sim_time,
+                'exit_when_done': LaunchConfiguration('exit_when_done'),
+            }.items(),
         ),
     ])

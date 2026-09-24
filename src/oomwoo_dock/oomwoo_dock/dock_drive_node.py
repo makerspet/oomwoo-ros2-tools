@@ -57,9 +57,15 @@ which is why the estimate is kept in the body frame and moved by each command.
   publishes   cmd_vel          geometry_msgs/Twist
   publishes   ~/state          std_msgs/String   GOTO/TURN/BACK/REGROUP/DONE/IDLE
   publishes   ~/docked         std_msgs/Bool     (latched)
+
+With exit_when_done (the default) the node exits once the attempt is over:
+code 0 when docked, 1 when it gave up. A launch file can end on that, so a
+finished run needs no Ctrl-C, and nothing is left publishing zero velocity
+over whatever drives the robot next.
 """
 
 import math
+import sys
 
 from geometry_msgs.msg import PoseStamped, Twist
 
@@ -105,6 +111,7 @@ DEFAULTS = {
     'search_max_turns': 2.0,      # give up after this much spinning
     'confirmations': 2,           # accepted fixes needed before moving
     'auto_start': True,
+    'exit_when_done': True,       # exit when docked (code 0) or given up (1)
     'pub_hz': 20.0,
 }
 
@@ -118,6 +125,7 @@ class DockDrive(Node):
         for name, default in DEFAULTS.items():
             self.declare_parameter(name, default)
         self.state = 'IDLE'
+        self.exit_code = None         # set when the attempt is over
         self.enabled = bool(self._p('auto_start'))
         self.attempts = 0
         self.est = None               # dock pose in the BODY frame
@@ -261,6 +269,7 @@ class DockDrive(Node):
                 self.get_logger().info(
                     'docked: lateral %+.1f mm, yaw %+.2f deg'
                     % (y * 1e3, math.degrees(wrap(th - math.pi))))
+                self._finish(0)
                 return
             # entry gate: the bay is only 25 mm wider than the robot per side
             if x > self._p('entry_guard_x_m') and (
@@ -276,6 +285,8 @@ class DockDrive(Node):
                 self._set_state('IDLE' if self.attempts > self._p('max_attempts')
                                 else 'REGROUP')
                 self._send(0.0, 0.0)
+                if self.state == 'IDLE':
+                    self._finish(1)
                 return
             w = -(self._p('k_lateral') * y
                   + self._p('k_heading') * wrap(th - math.pi))
@@ -297,6 +308,7 @@ class DockDrive(Node):
                 % (self.searched / (2.0 * math.pi)), throttle_duration_sec=5.0)
             self._set_state('IDLE')
             self._send(0.0, 0.0)
+            self._finish(1)
             return
         omega = (self._p('search_omega_beacon') if self.beacon_visible
                  else self._p('search_omega'))
@@ -324,6 +336,11 @@ class DockDrive(Node):
             return 0.0, w, False
         return self._p('v_approach') * math.cos(err), w, False
 
+    def _finish(self, code) -> None:
+        """End the attempt: exit with `code` if exit_when_done is set."""
+        if self._p('exit_when_done'):
+            self.exit_code = code
+
     def _send(self, v, w) -> None:
         self.cmd.linear.x = float(v)
         self.cmd.angular.z = float(w)
@@ -338,14 +355,22 @@ def main(args=None) -> None:
     """Spin the docking driver until shutdown."""
     rclpy.init(args=args)
     node = DockDrive()
+    code = 0
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and node.exit_code is None:
+            rclpy.spin_once(node, timeout_sec=0.1)
+        if node.exit_code is not None:
+            code = node.exit_code
+            node._send(0.0, 0.0)          # leave the robot stopped
+            node.get_logger().info(
+                'docking %s; exiting' % ('complete' if code == 0 else 'failed'))
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+    sys.exit(code)
 
 
 if __name__ == '__main__':

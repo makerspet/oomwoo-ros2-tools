@@ -44,6 +44,12 @@ Signal strength falls as 1/r^2 and carries noise, so `~/left` and `~/right` look
 like something a real receiver would report.
 
   subscribes  odom_truth   nav_msgs/Odometry   (ground truth; sim only)
+  subscribes  odom         nav_msgs/Odometry   (used while odom_truth is silent)
+
+The world publishes the true pose on /odom_truth only with
+odom_source:=robot_wheels. With the default, ground_truth, it is /odom that
+carries it and /odom_truth stays silent -- which left the receivers blind, and
+the robot docking on the LiDAR alone without anyone noticing.
   publishes   ~/left       std_msgs/Float32    (relative signal, 0..1)
   publishes   ~/right      std_msgs/Float32
   publishes   ~/visible    std_msgs/Bool       (both receivers have signal)
@@ -68,10 +74,15 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Float32
 
 DEFAULTS = {
-    # Dock pose in the world frame; the default is kitchen_dining's vacuum_dock.
-    'dock_x': -2.45,
+    # The dock's MOUTH in the world frame, with yaw pointing INTO the bay --
+    # the frame the detector fits, not the model's own origin. For
+    # kitchen_dining's vacuum_dock (model at -2.45, -0.5, yaw 90, bay from
+    # model y -0.34 to the back face at -0.10) that is (-2.11, -0.5), 180 deg,
+    # and the beacon lands on its visual at (-2.345, -0.5). The model pose was
+    # passed here at first, which put the beacon 0.24 m off, shining south.
+    'dock_x': -2.11,
     'dock_y': -0.5,
-    'dock_yaw_deg': 90.0,
+    'dock_yaw_deg': 180.0,
     # Beacon position in the DOCK frame (x into the bay from the mouth centre).
     'beacon_x': 0.235,
     'beacon_y': 0.0,
@@ -102,11 +113,13 @@ class IrBeaconSim(Node):
         for name, default in DEFAULTS.items():
             self.declare_parameter(name, default)
         self.pose = None
+        self.t_truth = None           # when odom_truth last delivered
         self.left_pub = self.create_publisher(Float32, '~/left', 10)
         self.right_pub = self.create_publisher(Float32, '~/right', 10)
         self.vis_pub = self.create_publisher(Bool, '~/visible', 10)
         self.bearing_pub = self.create_publisher(Float32, '~/bearing', 10)
-        self.create_subscription(Odometry, 'odom_truth', self._on_odom, 10)
+        self.create_subscription(Odometry, 'odom_truth', self._on_truth, 10)
+        self.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self.create_timer(1.0 / max(self._p('publish_hz'), 1.0), self._tick)
         self.get_logger().info(
             'ir_beacon_sim: dock at (%.2f, %.2f, %.0f deg), beacon visible within'
@@ -117,7 +130,18 @@ class IrBeaconSim(Node):
     def _p(self, name):
         return self.get_parameter(name).value
 
+    def _on_truth(self, msg: Odometry) -> None:
+        self.t_truth = self.get_clock().now()
+        self._set_pose(msg)
+
     def _on_odom(self, msg: Odometry) -> None:
+        # /odom is the truth only when /odom_truth is silent
+        if self.t_truth is not None and (
+                self.get_clock().now() - self.t_truth).nanoseconds < 1e9:
+            return
+        self._set_pose(msg)
+
+    def _set_pose(self, msg: Odometry) -> None:
         q = msg.pose.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
@@ -190,6 +214,12 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except RuntimeError as exc:
+        # the launch's SIGINT can land inside rclpy's message take, which then
+        # fails on a half-destroyed message: a traceback, but nothing wrong
+        if rclpy.ok():
+            raise
+        node.get_logger().debug('ignoring shutdown race: %s' % exc)
     finally:
         node.destroy_node()
         if rclpy.ok():

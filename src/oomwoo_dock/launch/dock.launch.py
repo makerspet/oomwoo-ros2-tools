@@ -18,10 +18,13 @@ Park the robot somewhere in front of the dock, roughly facing it, then launch
 this. The prior arguments say where the dock is expected in the scan frame; they
 only need to be close, and the fit does the rest. RViz is deliberately not
 started here, so it can come up first and stay up across restarts.
+
+The launch ends by itself when dock_drive does: once the robot is docked, or
+has given up. Pass exit_when_done:=false to keep the nodes running instead.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -40,6 +43,7 @@ def generate_launch_description():
         DeclareLaunchArgument('prior_y', default_value='0.0'),
         DeclareLaunchArgument('prior_yaw_deg', default_value='0.0'),
         DeclareLaunchArgument('auto_start', default_value='true'),
+        DeclareLaunchArgument('exit_when_done', default_value='true'),
         Node(
             package='oomwoo_dock',
             executable='dock_detector',
@@ -53,7 +57,11 @@ def generate_launch_description():
             name='dock_drive',
             output='screen',
             parameters=[{'use_sim_time': use_sim_time,
-                         'auto_start': LaunchConfiguration('auto_start')}],
+                         'auto_start': LaunchConfiguration('auto_start'),
+                         'exit_when_done': LaunchConfiguration('exit_when_done')}],
             remappings=[('~/dock_pose', '/dock_detector/dock_pose')],
+            # docked or given up: take the detector (and anything that
+            # included this launch file) down with it
+            on_exit=Shutdown(reason='docking finished'),
         ),
     ])
