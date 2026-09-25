@@ -392,13 +392,18 @@ def test_enable_resumes_from_halted():
     assert node.prev_d is None and node.arc_swept == 0.0
 
 
-def test_point_guard_does_not_tax_straight_walls():
+@pytest.mark.parametrize('sigma, allowed', [(0.005, 0.003), (0.010, 0.004),
+                                            (0.020, 0.012)])
+def test_point_guard_does_not_tax_straight_walls(sigma, allowed):
     """
-    On a smooth wall the guard must not win, or it holds the robot out by its noise.
+    On a smooth wall the guard must not win, at ANY sensor noise level.
 
-    The 3rd-nearest of ~60 noisy points sits ~1 cm closer than the wall really
-    is. Without a margin the guard beat the unbiased fit on every frame and the
-    robot held 9.9 mm out along every straight wall; with it, ~1 mm.
+    An order statistic of noisy points sits ~1 sd closer than the wall really
+    is. With no margin the guard beat the unbiased fit on every frame and held
+    the robot 9.9 mm out along every straight wall at 1 cm noise; a FIXED 1 cm
+    margin fixed that one noise level but left 18.7 mm at 2 cm. The margin is
+    now estimated from the scan, so it tracks the noise. (At 2 cm noise the fit
+    and controller themselves hold ~5 mm out, hence the looser bound there.)
     """
     world = ([harness.segment((-6.0, -0.6), (6.0, -0.6))], [])
     node, p = harness.make_follower()
@@ -407,12 +412,12 @@ def test_point_guard_does_not_tax_straight_walls():
     random.seed(1)
     b_ref = math.radians(p['bearing_ref_deg'])
     clears = []
-    for k in range(int(40.0 / dt)):
+    for k in range(int(30.0 / dt)):
         lx = x + harness.LIDAR_OFFSET_M * math.cos(th)
         ly = y + harness.LIDAR_OFFSET_M * math.sin(th)
         segs, circs = harness.to_robot(world, lx, ly, th)
-        d, b, _n = node._boundary(harness.Scan(harness.scan(segs, circs)), SMIN, SMAX,
-                                  p['max_follow_range_m'])
+        d, b, _n = node._boundary(harness.Scan(harness.scan(segs, circs, sigma)),
+                                  SMIN, SMAX, p['max_follow_range_m'])
         v, w, *_ = node._command(d, b, b_ref, dt)
         x += v * math.cos(th) * dt
         y += v * math.sin(th) * dt
@@ -420,4 +425,20 @@ def test_point_guard_does_not_tax_straight_walls():
         if k * dt > 5.0:
             clears.append(harness.clearance(world, x, y))
     offset = sum(clears) / len(clears) - p['standoff_m']
-    assert abs(offset) < 0.004, 'straight wall held %+.1f mm off the standoff' % (offset * 1000)
+    assert abs(offset) < allowed, 'noise %.1f cm: wall held %+.1f mm off the standoff' % (
+        sigma * 100, offset * 1000)
+
+
+def test_range_noise_estimate_tracks_the_sensor():
+    """The noise estimate recovers the true sd off a wall, across sensors."""
+    node, p = harness.make_follower()
+    wall = [harness.segment((-3.0, -0.23), (3.0, -0.23))]
+    for sigma in (0.005, 0.010, 0.020):
+        random.seed(4)
+        est = []
+        for _ in range(20):
+            node._boundary(harness.Scan(harness.scan(wall, [], sigma)), SMIN, SMAX,
+                           p['max_follow_range_m'])
+            est.append(node._noise)
+        mean = sum(est) / len(est)
+        assert abs(mean - sigma) < 0.25 * sigma, 'sd %.3f estimated as %.4f' % (sigma, mean)

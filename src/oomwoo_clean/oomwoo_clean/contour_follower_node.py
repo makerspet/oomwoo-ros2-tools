@@ -116,7 +116,7 @@ DEFAULTS = {
     'fit_max_dev_m': 0.05,         # fit vs nearest beam: distance disagreement cap
     'fit_max_dev_deg': 35.0,       # fit vs nearest beam: bearing disagreement cap
     'point_guard_rank': 3,         # never report further than the Nth-nearest scan point
-    'point_guard_margin_m': 0.010,  # ...plus this: the order statistic's own noise bias
+    'point_guard_noise_k': 1.0,    # ...plus this many noise sd, estimated from the scan
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -169,6 +169,7 @@ class ContourFollower(Node):
         self._bump_last = {}          # side -> time.monotonic() of its last contact
         self._fit_rms = None          # RMS distance of the fit window's points to the fit
         self._ff = 0.0                # filtered curvature feed-forward, rad/s
+        self._noise = None            # range noise sd estimated from the last fit window
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -436,7 +437,7 @@ class ContourFollower(Node):
 
     def _point_guard(self, sel, rank):
         """
-        Distance to the Nth-nearest scan point, measured where the standoff is.
+        Distance to the Nth-nearest scan point, plus its own noise bias.
 
         A fitted circle ROUNDS a sharp corner, so while wrapping one the curve
         passes inside the corner itself and the reported distance is optimistic
@@ -448,17 +449,45 @@ class ContourFollower(Node):
         exactly where the fit is wrong.
 
         The Nth-nearest rather than the very nearest, because the single nearest
-        beam carries the full noise. Even so, the 3rd-nearest of ~60 noisy points
-        sits about 1 cm closer than the surface really is, and since on a smooth
-        surface that makes the guard win every frame, it held the robot +9.9 mm
-        out on EVERY straight wall (and was most of what looked like a curvature
-        error). So the guard is lifted by point_guard_margin_m, its own noise
-        bias: on a smooth surface it no longer beats the unbiased fit, and at a
-        corner, where the fit is 23-54 mm optimistic, it still wins by plenty.
+        beam carries the full noise. Even so, an order statistic of noisy points
+        sits closer than the surface really is -- about one noise sd for the 3rd
+        of a few dozen -- and on a smooth surface that let the guard beat the
+        unbiased fit every frame: 9.9 mm out along every straight wall at 1 cm
+        noise. So the guard is lifted by point_guard_noise_k times the noise,
+        ESTIMATED FROM THIS SCAN rather than set as a length, because noise
+        varies with the LiDAR model, the surface and the light. Measured wall
+        offset the guard adds, at 0.5 / 1 / 2 cm of range noise:
+
+            fixed 1 cm margin      0.0 / 1.4 / 13.5 mm
+            median-9 filter        0.8 / 1.9 /  6.3 mm
+            estimated, k = 1.0     0.3 / 1.0 /  4.7 mm
+
+        (A median also has a sensor-dependent knob: its window is in BEAMS, so
+        it spans a different arc on a LiDAR with a different resolution.)
         """
         off = self._p('body_offset_m') if self._p('use_body_clearance') else 0.0
         ds = sorted(math.hypot(p[0] + off, p[1]) for p in sel)
-        return ds[min(int(rank) - 1, len(ds) - 1)] + self._p('point_guard_margin_m')
+        self._noise = self._range_noise(sel)
+        margin = self._p('point_guard_noise_k') * (self._noise or 0.0)
+        return ds[min(int(rank) - 1, len(ds) - 1)] + margin
+
+    @staticmethod
+    def _range_noise(sel):
+        """
+        Estimate the LiDAR range noise sd from the fit window's own points.
+
+        Along a surface the true range varies smoothly -- its second difference
+        between 1-degree neighbours is well under a millimetre -- so the second
+        difference of the MEASURED ranges is noise, with variance 6 sd^2. Its
+        median absolute value / (0.6745 * sqrt 6) estimates sd, and a median
+        shrugs off the handful of points at a corner or an edge. None when the
+        window is too short to say.
+        """
+        r = [p[2] for p in sel]                      # sel is in scan order
+        d2 = sorted(abs(r[i - 1] - 2.0 * r[i] + r[i + 1]) for i in range(1, len(r) - 1))
+        if len(d2) < 5:
+            return None
+        return d2[len(d2) // 2] / (0.6745 * math.sqrt(6.0))
 
     def _body_bearing(self, co, fallback):
         """
@@ -807,13 +836,14 @@ class ContourFollower(Node):
 
     def _fit_description(self):
         """One phrase naming the surface the estimate came off, for the log."""
+        noise = '' if self._noise is None else ', noise %.1f mm' % (self._noise * 1000)
         if self._dbg_fit is None:
-            return 'no fit, %d pts' % self._dbg_n
+            return 'no fit, %d pts%s' % (self._dbg_n, noise)
         if self._dbg_r is None or abs(self._dbg_r) > FLAT_RADIUS_M:
-            return 'fit %d pts, straight' % self._dbg_n
-        return 'fit %d pts, R=%.2f %s' % (
+            return 'fit %d pts, straight%s' % (self._dbg_n, noise)
+        return 'fit %d pts, R=%.2f %s%s' % (
             self._dbg_n, abs(self._dbg_r),
-            'convex' if self._dbg_r > 0.0 else 'concave')
+            'convex' if self._dbg_r > 0.0 else 'concave', noise)
 
     def _pub_errors(self, e_d, e_b, e_h) -> None:
         self.err_d_pub.publish(Float32(data=float(e_d)))

@@ -95,9 +95,14 @@ the robot onto that angle:
   `use_body_bearing` / `use_curvature_ff`) was built and measured: gentle bays
   land on target, but the tight bay goes into the wall. Both stay off.
 - The point guard (§3.2's "never further than the Nth-nearest point") carries a
-  noise margin, `point_guard_margin_m` (1 cm): without it the 3rd-nearest of ~60
-  noisy points beat the unbiased fit on every smooth surface and held the robot
-  9.9 mm out along every straight wall.
+  noise margin: without one the 3rd-nearest of ~60 noisy points beat the unbiased
+  fit on every smooth surface and held the robot 9.9 mm out along every straight
+  wall. The margin is `point_guard_noise_k` (1.0) times the range noise
+  ESTIMATED FROM EACH SCAN (median absolute second difference of neighbouring
+  ranges), not a fixed length, because noise depends on the LiDAR, the surface and
+  the light. Wall offset the guard adds at 0.5 / 1 / 2 cm noise: fixed 1 cm margin
+  0.0 / 1.4 / 13.5 mm, median-9 filter 0.8 / 1.9 / 6.3 mm, estimated 0.3 / 1.0 /
+  4.7 mm. The estimate is printed in the log line (`noise 9.8 mm`).
 - Do **not** cap `v` by curvature to buy clearance in turns. Tried and measured
   worse: the turn rate comes from the bearing error, so cutting `v` shrinks the
   path radius `v/ω` and the robot spirals *in* — around a 2 cm leg, clearance fell

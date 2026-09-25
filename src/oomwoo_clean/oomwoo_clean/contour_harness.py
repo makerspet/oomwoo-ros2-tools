@@ -151,6 +151,7 @@ def make_follower(**overrides):
     node._bump_last = {}
     node._fit_rms = None
     node._ff = 0.0
+    node._noise = None
     return node, params
 
 
