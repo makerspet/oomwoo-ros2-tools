@@ -279,10 +279,11 @@ def test_curves_are_held_near_the_standoff(name, on_curve):
 
     With the bearing taken at the LiDAR, the offset geometry (a tangent robot
     sees a curve's nearest point off abeam) and the proportional lag (it must
-    hold an error to keep turning) nearly cancel. Measured: legs 0.236 and
-    0.238 m, the R 0.35 bay 0.253 m, against 0.23. This pins that, because the
-    textbook correction -- bearing at the body centre plus curvature
-    feed-forward -- was measured to put the robot INTO the bay's wall.
+    hold an error to keep turning) nearly cancel. Measured, with the point
+    guard's noise margin: the 2 cm leg +0.6 cm, the R 0.35 bay +1.7 cm, against
+    a straight wall's +0.1 cm. This pins that, because the textbook correction --
+    bearing at the body centre plus curvature feed-forward -- was measured to
+    put the robot INTO the bay's wall.
     """
     mean, low = _curve_clearance(name, 40.0, on_curve)
     standoff = harness.make_follower()[1]['standoff_m']
@@ -389,3 +390,34 @@ def test_enable_resumes_from_halted():
     node._on_enable(SimpleNamespace(data=True))
     assert node.state == 'ALIGN'
     assert node.prev_d is None and node.arc_swept == 0.0
+
+
+def test_point_guard_does_not_tax_straight_walls():
+    """
+    On a smooth wall the guard must not win, or it holds the robot out by its noise.
+
+    The 3rd-nearest of ~60 noisy points sits ~1 cm closer than the wall really
+    is. Without a margin the guard beat the unbiased fit on every frame and the
+    robot held 9.9 mm out along every straight wall; with it, ~1 mm.
+    """
+    world = ([harness.segment((-6.0, -0.6), (6.0, -0.6))], [])
+    node, p = harness.make_follower()
+    x, y, th = -5.0, -0.6 + p['standoff_m'], 0.0
+    dt = 1.0 / harness.SCAN_HZ
+    random.seed(1)
+    b_ref = math.radians(p['bearing_ref_deg'])
+    clears = []
+    for k in range(int(40.0 / dt)):
+        lx = x + harness.LIDAR_OFFSET_M * math.cos(th)
+        ly = y + harness.LIDAR_OFFSET_M * math.sin(th)
+        segs, circs = harness.to_robot(world, lx, ly, th)
+        d, b, _n = node._boundary(harness.Scan(harness.scan(segs, circs)), SMIN, SMAX,
+                                  p['max_follow_range_m'])
+        v, w, *_ = node._command(d, b, b_ref, dt)
+        x += v * math.cos(th) * dt
+        y += v * math.sin(th) * dt
+        th += w * dt
+        if k * dt > 5.0:
+            clears.append(harness.clearance(world, x, y))
+    offset = sum(clears) / len(clears) - p['standoff_m']
+    assert abs(offset) < 0.004, 'straight wall held %+.1f mm off the standoff' % (offset * 1000)

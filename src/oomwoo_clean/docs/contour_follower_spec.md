@@ -88,6 +88,16 @@ the robot onto that angle:
   `|e_h|` (not `e_β`): a large bearing error is exactly what a legitimate far
   approach looks like, and keying the ease-off to it made the robot crawl in at
   the speed floor instead of closing.
+- On curves this law settles slightly outward: with the bearing taken at the LiDAR
+  (0.0745 m ahead of the body centre) the offset geometry and the proportional lag
+  nearly cancel, leaving +0.6 cm on a 2 cm leg and +1.7 cm in an R 0.35 bay. The
+  textbook correction (body-centre bearing + curvature feed-forward,
+  `use_body_bearing` / `use_curvature_ff`) was built and measured: gentle bays
+  land on target, but the tight bay goes into the wall. Both stay off.
+- The point guard (§3.2's "never further than the Nth-nearest point") carries a
+  noise margin, `point_guard_margin_m` (1 cm): without it the 3rd-nearest of ~60
+  noisy points beat the unbiased fit on every smooth surface and held the robot
+  9.9 mm out along every straight wall.
 - Do **not** cap `v` by curvature to buy clearance in turns. Tried and measured
   worse: the turn rate comes from the bearing error, so cutting `v` shrinks the
   path radius `v/ω` and the robot spirals *in* — around a 2 cm leg, clearance fell

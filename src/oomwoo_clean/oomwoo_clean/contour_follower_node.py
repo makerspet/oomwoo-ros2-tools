@@ -116,6 +116,7 @@ DEFAULTS = {
     'fit_max_dev_m': 0.05,         # fit vs nearest beam: distance disagreement cap
     'fit_max_dev_deg': 35.0,       # fit vs nearest beam: bearing disagreement cap
     'point_guard_rank': 3,         # never report further than the Nth-nearest scan point
+    'point_guard_margin_m': 0.010,  # ...plus this: the order statistic's own noise bias
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -447,12 +448,17 @@ class ContourFollower(Node):
         exactly where the fit is wrong.
 
         The Nth-nearest rather than the very nearest, because the single nearest
-        beam carries the full noise and biases the standoff outward: at rank 3
-        the average cost is ~7 mm of extra clearance, against ~14 mm at rank 1.
+        beam carries the full noise. Even so, the 3rd-nearest of ~60 noisy points
+        sits about 1 cm closer than the surface really is, and since on a smooth
+        surface that makes the guard win every frame, it held the robot +9.9 mm
+        out on EVERY straight wall (and was most of what looked like a curvature
+        error). So the guard is lifted by point_guard_margin_m, its own noise
+        bias: on a smooth surface it no longer beats the unbiased fit, and at a
+        corner, where the fit is 23-54 mm optimistic, it still wins by plenty.
         """
         off = self._p('body_offset_m') if self._p('use_body_clearance') else 0.0
         ds = sorted(math.hypot(p[0] + off, p[1]) for p in sel)
-        return ds[min(int(rank) - 1, len(ds) - 1)]
+        return ds[min(int(rank) - 1, len(ds) - 1)] + self._p('point_guard_margin_m')
 
     def _body_bearing(self, co, fallback):
         """
@@ -519,7 +525,10 @@ class ContourFollower(Node):
                                               touches (min 0.164)
 
         Gentle bays land on target, but legs get no better and the tight bay goes
-        from 2 cm too far out (safe) to into the wall. The body-centre bearing
+        from 2 cm too far out (safe) to into the wall. (Measured before the point
+        guard got its noise margin, which since took ~1 cm off every "today"
+        figure -- a straight wall was sitting 9.9 mm out -- so today's law is
+        closer still.) The body-centre bearing
         alone is worse still: legs swing ~11 cm out and bays hit.
         """
         r = self._dbg_r
