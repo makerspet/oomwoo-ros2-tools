@@ -237,6 +237,59 @@ def test_point_guard_stops_the_fit_cutting_a_sharp_corner():
     assert worst < 0.015, 'reports the corner %+.3f m further away than it is' % worst
 
 
+def _curve_clearance(name, seconds, on_curve, **overrides):
+    """Mean true body-centre clearance while on the curve, and the minimum overall."""
+    world, start = harness.SCENARIOS[name]
+    node, p = harness.make_follower(**overrides)
+    x, y, th = start
+    dt = 1.0 / harness.SCAN_HZ
+    random.seed(1)
+    smin, smax = math.radians(p['sector_min_deg']), math.radians(p['sector_max_deg'])
+    b_ref = math.radians(p['bearing_ref_deg'])
+    on, low = [], float('inf')
+    for k in range(int(seconds / dt)):
+        lx = x + harness.LIDAR_OFFSET_M * math.cos(th)
+        ly = y + harness.LIDAR_OFFSET_M * math.sin(th)
+        segs, circs = harness.to_robot(world, lx, ly, th)
+        d, b, _n = node._boundary(harness.Scan(harness.scan(segs, circs)), smin, smax,
+                                  p['max_follow_range_m'])
+        if d is None:
+            v, w = p['v_min'], -p['v_nominal'] / p['convex_arc_radius_m']
+        else:
+            v, w, *_ = node._command(d, b, b_ref, dt)
+        x += v * math.cos(th) * dt
+        y += v * math.sin(th) * dt
+        th += w * dt
+        c = harness.clearance(world, x, y)
+        if k * dt > 5.0:
+            low = min(low, c)
+            if on_curve(x, y):
+                on.append(c)
+    return sum(on) / len(on), low
+
+
+@pytest.mark.parametrize('name, on_curve', [
+    ('table_leg_2cm', lambda x, y: True),
+    ('table_leg_5cm', lambda x, y: True),
+    ('concave_bay', lambda x, y: abs(x) < 0.30 and y < -0.39),
+])
+def test_curves_are_held_near_the_standoff(name, on_curve):
+    """
+    On curves the default law holds within ~3 cm of the standoff, never inward.
+
+    With the bearing taken at the LiDAR, the offset geometry (a tangent robot
+    sees a curve's nearest point off abeam) and the proportional lag (it must
+    hold an error to keep turning) nearly cancel. Measured: legs 0.236 and
+    0.238 m, the R 0.35 bay 0.253 m, against 0.23. This pins that, because the
+    textbook correction -- bearing at the body centre plus curvature
+    feed-forward -- was measured to put the robot INTO the bay's wall.
+    """
+    mean, low = _curve_clearance(name, 40.0, on_curve)
+    standoff = harness.make_follower()[1]['standoff_m']
+    assert -0.01 < mean - standoff < 0.03, '%s: %.3f m on the curve' % (name, mean)
+    assert low > harness.CONTACT_RADIUS_M, '%s: touched, min %.3f m' % (name, low)
+
+
 @pytest.mark.xfail(strict=True, reason='known: no front guard -- the follower only '
                                        'steers on the nearest surface')
 def test_obstacle_in_the_path_is_avoided():

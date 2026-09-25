@@ -64,6 +64,13 @@ def circle(centre, radius):
     return (centre, radius)
 
 
+def arc(cx, cy, r, a0, a1, n=48):
+    """Build an arc of wall as n segments, from angle a0 to a1 (radians)."""
+    pts = [(cx + r * math.cos(a0 + (a1 - a0) * k / n),
+            cy + r * math.sin(a0 + (a1 - a0) * k / n)) for k in range(n + 1)]
+    return [segment(pts[k], pts[k + 1]) for k in range(n)]
+
+
 def box(cx, cy, half):
     """Build a square obstacle's four walls, centred at (cx, cy)."""
     c = [(cx - half, cy - half), (cx + half, cy - half),
@@ -142,6 +149,8 @@ def make_follower(**overrides):
     node._dbg_d = node._dbg_b = node._dbg_fit = node._dbg_r = None
     node._dbg_n = 0
     node._bump_last = {}
+    node._fit_rms = None
+    node._ff = 0.0
     return node, params
 
 
@@ -189,16 +198,8 @@ def run(world, start, seconds=40.0, seed=0, settle_s=5.0, **overrides):
             v = params['v_min']
             w = -params['v_nominal'] / params['convex_arc_radius_m']
         else:
-            e_d = d - params['standoff_m']
-            e_b = b - b_ref
-            a_max = math.radians(params['alpha_max_deg'])
-            alpha = max(-a_max, min(a_max, params['k_approach'] * e_d))
-            e_h = alpha - e_b
-            w = max(-params['omega_max'],
-                    min(params['omega_max'], -params['k_heading'] * e_h))
-            slow = math.radians(params['slow_angle_deg'])
-            v = params['v_nominal'] * (1.0 - min(1.0, abs(e_h) / slow))
-            v = max(params['v_min'], v)
+            # the node's own control law, not a copy of it
+            v, w, e_d, e_b, _alpha, _e_h = node._command(d, b, b_ref, dt)
             errs.append(e_d)
             lags.append(math.degrees(e_b))
         w_out = node.side * w
@@ -248,6 +249,12 @@ SCENARIOS = {
     # 0.18 m half-width, but far enough out that by the time it is as near as
     # the wall (0.23 m) it is at +31 deg, past the sector's +20 deg edge.
     # Needs a front guard.
+    # A concave bay of R 0.35 cut into a straight wall, opening toward the
+    # room: the robot must orbit INSIDE it at only 0.12 m radius. The tight
+    # concave case, where the follower settles outward of the standoff.
+    'concave_bay': (([segment((-3.0, -0.6), (-0.35, -0.6))]
+                     + arc(0.0, -0.6, 0.35, math.pi, 2.0 * math.pi)
+                     + [segment((0.35, -0.6), (3.0, -0.6))], []), (-1.4, -0.37, 0.0)),
     'post_in_path': (([segment((-2.0, -0.6), (2.0, -0.6))],
                       [circle((0.3, -0.25), 0.02)]), (-1.2, -0.37, 0.0)),
 }

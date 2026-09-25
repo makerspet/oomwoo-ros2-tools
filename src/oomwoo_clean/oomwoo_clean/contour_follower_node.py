@@ -94,6 +94,17 @@ DEFAULTS = {
     'standoff_m': 0.23,            # body centre to surface; flush bumper reaches 0.1745
     'body_offset_m': 0.0745,       # LiDAR ahead of the wheel axle; = URDF lidar_center_offset
     'use_body_clearance': True,    # measure the standoff at the body centre, not the LiDAR
+    # Measured and NOT adopted -- see _curvature_ff. Off: today's law holds curves
+    # within ~2 cm of the standoff, always outward; these two together land gentle
+    # bays on target but put the robot into the wall of a tight one.
+    'use_body_bearing': False,     # measure the bearing at the body centre too
+    'use_curvature_ff': False,     # turn at the rate the fitted curve needs
+    'ff_min_points': 20,           # concave feed-forward only off a fit this well supported
+    'ff_max_rms_m': 0.015,         # ...and this close to its points
+    'ff_concave_gain': 0.5,        # concave feed-forward scale: its radius is ill-conditioned
+    'ff_min_radius_m': 0.05,       # never feed forward a path radius tighter than this
+    'ff_max': 0.8,                 # rad/s cap on the feed-forward alone
+    'ff_tau_s': 0.3,               # low-pass on the feed-forward, so it ramps in
     'v_nominal': 0.15,             # m/s cruise
     'v_min': 0.05,                 # m/s floor (in corners)
     'sector_min_deg': -170.0,      # follow-side + forward window (right-follow)
@@ -155,6 +166,8 @@ class ContourFollower(Node):
         self._dbg_body = None         # body-centre distance to the fitted curve
         self._dbg_r = None            # fitted radius, None = straight
         self._bump_last = {}          # side -> time.monotonic() of its last contact
+        self._fit_rms = None          # RMS distance of the fit window's points to the fit
+        self._ff = 0.0                # filtered curvature feed-forward, rad/s
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -395,15 +408,18 @@ class ContourFollower(Node):
                     self._dbg_r = (
                         math.copysign(math.sqrt(disc) / (2.0 * abs(a)), d * a)
                         if abs(a) > 1e-6 else None)
+                    self._fit_rms = self._fit_residual(sel, (a, b_, c, d))
                     self._dbg_body = self._body_distance((a, b_, c, d), dist, bear)
                     reported = (self._dbg_body if self._p('use_body_clearance')
                                 else dist)
                     guard = self._point_guard(sel, self._p('point_guard_rank'))
                     self._dbg_body = min(self._dbg_body, guard)
+                    if self._p('use_body_bearing'):
+                        bear = self._body_bearing((a, b_, c, d), bear)
                     return min(reported, guard), bear, len(sel)
 
         self._dbg_d, self._dbg_b = seed_r, pts[seed][3]
-        self._dbg_fit = self._dbg_r = None
+        self._dbg_fit = self._dbg_r = self._fit_rms = None
         self._dbg_n = len(sel)
         self._dbg_body = self._body_distance(None, seed_r, pts[seed][3])
         reported = self._dbg_body if self._p('use_body_clearance') else seed_r
@@ -411,7 +427,11 @@ class ContourFollower(Node):
             guard = self._point_guard(sel, self._p('point_guard_rank'))
             self._dbg_body = min(self._dbg_body, guard)
             reported = min(reported, guard)
-        return reported, pts[seed][3], len(sel)
+        bear = pts[seed][3]
+        if self._p('use_body_bearing'):
+            # no curve to evaluate: the direction from the body centre to the beam
+            bear = math.atan2(pts[seed][1], pts[seed][0] + self._p('body_offset_m'))
+        return reported, bear, len(sel)
 
     def _point_guard(self, sel, rank):
         """
@@ -433,6 +453,117 @@ class ContourFollower(Node):
         off = self._p('body_offset_m') if self._p('use_body_clearance') else 0.0
         ds = sorted(math.hypot(p[0] + off, p[1]) for p in sel)
         return ds[min(int(rank) - 1, len(ds) - 1)]
+
+    def _body_bearing(self, co, fallback):
+        """
+        Bearing of the fitted curve's nearest point, seen from the BODY CENTRE.
+
+        The LiDAR sits body_offset_m ahead of the body centre, and from there
+        the nearest point of a CURVED surface is not abeam even when the robot
+        runs perfectly tangent to it: it is off by atan(offset / path radius) --
+        16.6 deg around a 4 cm leg, 31.8 deg inside a 0.35 m bay, matching the
+        logged steady bearing errors. The controller read that geometry as the
+        robot being angled, and settled at the wrong distance to cancel it.
+        From the body centre, a tangent robot sees the nearest point exactly
+        abeam, on any curvature. It is the conic's gradient direction there.
+        """
+        a, b, c, d = co
+        px = -self._p('body_offset_m')
+        dp = a * px * px + b * px + d
+        bp, cp = 2.0 * a * px + b, c
+        if math.hypot(bp, cp) < 1e-9:
+            return fallback
+        sg = -1.0 if dp > 0.0 else 1.0
+        return math.atan2(sg * cp, sg * bp)
+
+    @staticmethod
+    def _fit_residual(sel, co):
+        """RMS distance of the window's points to the fitted curve (first order)."""
+        a, b, c, d = co
+        x = np.array([p[0] for p in sel])
+        y = np.array([p[1] for p in sel])
+        val = a * (x * x + y * y) + b * x + c * y + d
+        grad = np.hypot(2.0 * a * x + b, 2.0 * a * y + c)
+        return float(np.sqrt(np.mean((val / np.maximum(grad, 1e-9)) ** 2)))
+
+    def _curvature_ff(self, v):
+        """
+        Turn rate the fitted curve asks for, or 0 when the fit is not trusted.
+
+        A proportional controller can only turn by holding an error, so on a
+        curve it settles off the standoff. Feeding forward the turn rate the
+        curve itself needs -- v over the path radius -- leaves the feedback
+        nothing to hold. Only with the bearing measured at the body centre,
+        though: from the LiDAR the geometry already supplied most of this turn,
+        and adding it on top spiralled the robot into a table leg.
+
+        Convex and concave are treated differently because their path radii
+        are conditioned differently. Convex (a leg, a pillar): the path radius
+        is R + standoff, dominated by the standoff, so even a rough R off a
+        15-point leg is good enough and the feed-forward always applies. Concave
+        (a bay): the path radius is |R| - standoff, a DIFFERENCE of similar
+        numbers -- a 0.35 m bay fitted as 0.27 m gives 0.04 m instead of 0.12 m,
+        three times the turn. So concave feed-forward needs a well-supported fit,
+        is scaled down by ff_concave_gain, and is skipped for a bay the robot
+        cannot orbit inside at all.
+
+        OFF BY DEFAULT, on measurement. Today's law turns out to hold curves well
+        already: with the bearing taken at the LiDAR, the offset geometry and the
+        proportional lag nearly cancel. True clearance on the curve against a
+        0.23 m target, harness, today vs body bearing + this feed-forward:
+
+            2 cm leg      0.236 vs 0.248      bay R 1.00   0.233 vs 0.236
+            5 cm leg      0.238 vs 0.242      bay R 0.75   0.239 vs 0.234
+            15 cm seat    0.247 vs 0.243      bay R 0.50   0.242 vs 0.230
+                                              bay R 0.35   0.253 vs 0.211, and
+                                              touches (min 0.164)
+
+        Gentle bays land on target, but legs get no better and the tight bay goes
+        from 2 cm too far out (safe) to into the wall. The body-centre bearing
+        alone is worse still: legs swing ~11 cm out and bays hit.
+        """
+        r = self._dbg_r
+        if not self._p('use_curvature_ff') or r is None or abs(r) > FLAT_RADIUS_M:
+            return 0.0
+        s = self._p('standoff_m')
+        if r > 0.0:                                 # convex: turn toward it
+            return _clamp(-v / (r + s), -self._p('ff_max'), self._p('ff_max'))
+        if (self._dbg_n < self._p('ff_min_points') or self._fit_rms is None
+                or self._fit_rms > self._p('ff_max_rms_m')):
+            return 0.0
+        path = -r - s                               # concave: |R| - s, turn away
+        if path < self._p('ff_min_radius_m'):
+            return 0.0
+        return _clamp(self._p('ff_concave_gain') * v / path, 0.0, self._p('ff_max'))
+
+    def _command(self, d, b, b_ref, dt):
+        """
+        Compute the control law: (v, omega, e_d, e_b, alpha, e_h), no side effects.
+
+        Kept free of publishing so the offline harness drives exactly this, not
+        a copy of it.
+        """
+        e_d = d - self._p('standoff_m')
+        e_b = b - b_ref                  # + = currently angled toward the wall
+        # Outer loop: how far to angle toward/away, CAPPED. Without the cap a far
+        # wall demands a saturated turn that the heading term cancels, and the robot
+        # crawls in at the speed floor instead of approaching cleanly.
+        a_max = math.radians(self._p('alpha_max_deg'))
+        alpha = _clamp(self._p('k_approach') * e_d, -a_max, a_max)
+        # Inner loop: steer the actual angle onto the desired one.
+        e_h = alpha - e_b
+        # Ease off only when the INNER loop is far off (a real corner); a steady
+        # approach has e_h ~ 0, so it runs at full speed.
+        slow = math.radians(self._p('slow_angle_deg'))
+        v = self._p('v_nominal') * (1.0 - min(1.0, abs(e_h) / max(slow, 1e-3)))
+        v = max(self._p('v_min'), v)
+        # Curvature feed-forward, low-passed so a fit appearing or vanishing ramps
+        # the turn in and out instead of kicking it.
+        k = min(1.0, dt / max(self._p('ff_tau_s'), 1e-3)) if dt > 0.0 else 1.0
+        self._ff += (self._curvature_ff(v) - self._ff) * k
+        omega = _clamp(-self._p('k_heading') * e_h + self._ff,
+                       -self._p('omega_max'), self._p('omega_max'))
+        return v, omega, e_d, e_b, alpha, e_h
 
     def _body_distance(self, co, d_lidar, bear):
         """
@@ -509,29 +640,14 @@ class ContourFollower(Node):
                 self._set_state('ARC')
             else:
                 self.prev_d = d
-                self._follow(d, b, b_ref)
+                self._follow(d, b, b_ref, dt)
                 return
 
         if self.state == 'ARC':
             self._arc(msg, smin, smax, max_r, b_ref, dt)
 
-    def _follow(self, d, b, b_ref) -> None:
-        e_d = d - self._p('standoff_m')
-        e_b = b - b_ref                  # + = currently angled toward the wall
-        # Outer loop: how far to angle toward/away, CAPPED. Without the cap a far
-        # wall demands a saturated turn that the heading term cancels, and the robot
-        # crawls in at the speed floor instead of approaching cleanly.
-        a_max = math.radians(self._p('alpha_max_deg'))
-        alpha = _clamp(self._p('k_approach') * e_d, -a_max, a_max)
-        # Inner loop: steer the actual angle onto the desired one.
-        e_h = alpha - e_b
-        omega = _clamp(-self._p('k_heading') * e_h,
-                       -self._p('omega_max'), self._p('omega_max'))
-        # Ease off only when the INNER loop is far off (a real corner); a steady
-        # approach has e_h ~ 0, so it runs at full speed.
-        slow = math.radians(self._p('slow_angle_deg'))
-        v = self._p('v_nominal') * (1.0 - min(1.0, abs(e_h) / max(slow, 1e-3)))
-        v = max(self._p('v_min'), v)
+    def _follow(self, d, b, b_ref, dt=0.0) -> None:
+        v, omega, e_d, e_b, alpha, e_h = self._command(d, b, b_ref, dt)
         self._set_cmd(v, self.side * omega)
         self._pub_errors(e_d, e_b, e_h)
         self._maybe_log(d, e_d, e_b, alpha, e_h, v, omega)
@@ -544,7 +660,7 @@ class ContourFollower(Node):
         if d is not None and d <= self._p('standoff_m') + self._p('reacquire_margin_m'):
             self.prev_d = d
             self._set_state('FOLLOW')
-            self._follow(d, b, b_ref)
+            self._follow(d, b, b_ref, dt)
             return
         if math.degrees(self.arc_swept) > self._p('convex_arc_max_deg'):
             self.get_logger().warn('convex arc found no boundary -- LOST')
