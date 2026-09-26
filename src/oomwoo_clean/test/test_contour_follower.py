@@ -430,15 +430,19 @@ def test_point_guard_does_not_tax_straight_walls(sigma, allowed):
 
 
 def test_range_noise_estimate_tracks_the_sensor():
-    """The noise estimate recovers the true sd off a wall, across sensors."""
-    node, p = harness.make_follower()
+    """
+    The noise estimate recovers the true sd off a wall, across sensors.
+
+    It is a running average -- one window's estimate scatters 6-19 mm at a true
+    10 mm, the sensor's noise does not -- so each sensor gets a fresh node and
+    enough scans (~10 s at 10 Hz) for the average to settle.
+    """
     wall = [harness.segment((-3.0, -0.23), (3.0, -0.23))]
     for sigma in (0.005, 0.010, 0.020):
+        node, p = harness.make_follower()
         random.seed(4)
-        est = []
-        for _ in range(20):
+        for _ in range(100):
             node._boundary(harness.Scan(harness.scan(wall, [], sigma)), SMIN, SMAX,
                            p['max_follow_range_m'])
-            est.append(node._noise)
-        mean = sum(est) / len(est)
-        assert abs(mean - sigma) < 0.25 * sigma, 'sd %.3f estimated as %.4f' % (sigma, mean)
+        assert abs(node._noise - sigma) < 0.2 * sigma, 'sd %.3f estimated as %.4f' % (
+            sigma, node._noise)

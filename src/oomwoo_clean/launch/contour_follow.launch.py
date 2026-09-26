@@ -29,6 +29,11 @@ hides the Selection, Tool Properties and Views panes.
     rviz_config:=wall_follow.rviz
   ros2 run kaiaai_teleop teleop_keyboard          # park near a wall, then quit
   ros2 launch oomwoo_clean contour_follow.launch.py use_sim_time:=true
+
+Only the arguments declared below reach the node. `ros2 launch` SILENTLY accepts
+any other name:=value and drops it -- halt_on_bump:=false did nothing until it
+was declared here, and runs meant to have halting off had it on. Anything not
+declared: `ros2 param set /contour_follower <name> <value>` once it is running.
 """
 
 from launch import LaunchDescription
@@ -45,6 +50,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('follow_side', default_value='right'),
         DeclareLaunchArgument('standoff_m', default_value='0.23'),
+        DeclareLaunchArgument('halt_on_bump', default_value='true',
+                              description='stop dead on any bumper contact'),
+        DeclareLaunchArgument('use_body_bearing', default_value='false',
+                              description='A/B: bearing measured at the body centre'),
+        DeclareLaunchArgument('use_curvature_ff', default_value='false',
+                              description='A/B: curvature feed-forward'),
         Node(
             package='oomwoo_clean', executable='contour_follower',
             name='contour_follower', output='screen',
@@ -53,5 +64,11 @@ def generate_launch_description() -> LaunchDescription:
                 'follow_side': LaunchConfiguration('follow_side'),
                 'standoff_m': ParameterValue(
                     LaunchConfiguration('standoff_m'), value_type=float),
+                'halt_on_bump': ParameterValue(
+                    LaunchConfiguration('halt_on_bump'), value_type=bool),
+                'use_body_bearing': ParameterValue(
+                    LaunchConfiguration('use_body_bearing'), value_type=bool),
+                'use_curvature_ff': ParameterValue(
+                    LaunchConfiguration('use_curvature_ff'), value_type=bool),
             }]),
     ])

@@ -117,6 +117,7 @@ DEFAULTS = {
     'fit_max_dev_deg': 35.0,       # fit vs nearest beam: bearing disagreement cap
     'point_guard_rank': 3,         # never report further than the Nth-nearest scan point
     'point_guard_noise_k': 1.0,    # ...plus this many noise sd, estimated from the scan
+    'noise_smoothing': 0.05,       # running-average weight per scan (~2 s at 10 Hz)
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
     'k_approach': 2.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
@@ -169,7 +170,7 @@ class ContourFollower(Node):
         self._bump_last = {}          # side -> time.monotonic() of its last contact
         self._fit_rms = None          # RMS distance of the fit window's points to the fit
         self._ff = 0.0                # filtered curvature feed-forward, rad/s
-        self._noise = None            # range noise sd estimated from the last fit window
+        self._noise = None            # range noise sd, running average over fit windows
 
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -467,7 +468,13 @@ class ContourFollower(Node):
         """
         off = self._p('body_offset_m') if self._p('use_body_clearance') else 0.0
         ds = sorted(math.hypot(p[0] + off, p[1]) for p in sel)
-        self._noise = self._range_noise(sel)
+        # A sensor's noise does not change scan to scan, but one window's estimate
+        # does: 5.7-19.4 mm per frame at a true 10 mm. Averaged over ~2 s it is
+        # steady, so one unlucky frame cannot shift the guard by a centimetre.
+        est = self._range_noise(sel)
+        if est is not None:
+            a = self._p('noise_smoothing')
+            self._noise = est if self._noise is None else (1.0 - a) * self._noise + a * est
         margin = self._p('point_guard_noise_k') * (self._noise or 0.0)
         return ds[min(int(rank) - 1, len(ds) - 1)] + margin
 
