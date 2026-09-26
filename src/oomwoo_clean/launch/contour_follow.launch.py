@@ -50,6 +50,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('follow_side', default_value='right'),
         DeclareLaunchArgument('standoff_m', default_value='0.23'),
+        DeclareLaunchArgument('k_approach', default_value='2.0',
+                              description='rad of approach angle per m of distance error'),
         DeclareLaunchArgument('halt_on_bump', default_value='true',
                               description='stop dead on any bumper contact'),
         DeclareLaunchArgument('use_body_bearing', default_value='false',
@@ -64,6 +66,8 @@ def generate_launch_description() -> LaunchDescription:
                 'follow_side': LaunchConfiguration('follow_side'),
                 'standoff_m': ParameterValue(
                     LaunchConfiguration('standoff_m'), value_type=float),
+                'k_approach': ParameterValue(
+                    LaunchConfiguration('k_approach'), value_type=float),
                 'halt_on_bump': ParameterValue(
                     LaunchConfiguration('halt_on_bump'), value_type=bool),
                 'use_body_bearing': ParameterValue(
