@@ -119,7 +119,7 @@ DEFAULTS = {
     'point_guard_noise_k': 1.0,    # ...plus this many noise sd, estimated from the scan
     'noise_smoothing': 0.05,       # running-average weight per scan (~2 s at 10 Hz)
     'bearing_ref_deg': -90.0,      # want the nearest point abeam (right)
-    'k_approach': 2.0,             # rad of approach angle per m of standoff error
+    'k_approach': 6.0,             # rad of approach angle per m of standoff error
     'alpha_max_deg': 40.0,         # cap on the approach angle (far-wall approach)
     'k_heading': 1.5,              # rad/s per rad of heading error
     'omega_max': 1.0,              # rad/s cap
