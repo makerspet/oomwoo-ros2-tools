@@ -43,11 +43,11 @@ follower and this node together; see there for the full simulator recipe.
                                          99 written off, 110 swept, 0 elsewhere)
   publishes   ~/cleaned                  nav_msgs/OccupancyGrid (latched; 30 passed over,
                                          0 elsewhere)
+  publishes   ~/target                   geometry_msgs/PoseStamped
 
 The two grids are coded for RViz's Map display with Color Scheme "costmap",
 where 0 draws transparent: dirty edge magenta, written off cyan, swept green,
 floor passed over blue (oomwoo_one's edge_clean.rviz sets this up).
-  publishes   ~/target                   geometry_msgs/PoseStamped
 """
 
 import math
@@ -57,6 +57,7 @@ from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 import numpy as np
+from oomwoo_clean.edge_sweep import EdgeSweep
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -66,8 +67,6 @@ from rclpy.qos import (
 from rclpy.time import Time
 from std_msgs.msg import Bool, String
 import tf2_ros
-
-from oomwoo_clean.edge_sweep import EdgeSweep
 
 DEFAULTS = {
     'global_frame': 'map',
