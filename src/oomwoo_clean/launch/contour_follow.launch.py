@@ -50,7 +50,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('follow_side', default_value='right'),
         DeclareLaunchArgument('standoff_m', default_value='0.23'),
-        DeclareLaunchArgument('k_approach', default_value='6.0',
+        DeclareLaunchArgument('k_approach', default_value='12.0',
                               description='rad of approach angle per m of distance error'),
         DeclareLaunchArgument('halt_on_bump', default_value='true',
                               description='stop dead on any bumper contact'),
