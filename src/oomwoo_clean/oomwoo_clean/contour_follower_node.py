@@ -36,8 +36,11 @@ reading and ARCS toward the follow side at ~standoff radius until it re-acquires
 -- "lose the wall, curve toward it". Left-follow is the mirror (the scan bearings
 and the output omega are both negated).
 
-Phase 1: FOLLOW + convex ARC, with a rotate-in-place ALIGN entry. No loop-closure
-yet -- it runs until stopped (like wall_clean). See docs/contour_follower_spec.md.
+Phase 1: FOLLOW + convex ARC, with a rotate-in-place ALIGN entry. On its own it
+runs until stopped (like wall_clean) -- round a lone table leg, forever. The
+cleaning manager (clean_manager_node.py, edge_clean.launch.py) supplies the loop
+closure: it stops the follower once it is back on its own track and sends it to
+the next dirty edge. See docs/contour_follower_spec.md.
 
 Every bump is logged: the start of each contact, not every message. With
 halt_on_bump (the default) a bump while active also stops the robot dead and
@@ -51,9 +54,10 @@ followed wall is not avoided.
   subscribes  bumper_left/contact   ros_gz_interfaces/Contacts (logged; halts if halt_on_bump)
   subscribes  bumper_right/contact  ros_gz_interfaces/Contacts (logged; halts if halt_on_bump)
   subscribes  ~/enable              std_msgs/Bool              (stop/go; resumes HALTED)
-  publishes   cmd_vel               geometry_msgs/Twist
+  publishes   cmd_vel               geometry_msgs/Twist        (only while enabled, then one stop)
   publishes   cleaning_active       std_msgs/Bool              (latched; True while active)
-  publishes   ~/state               std_msgs/String            (ALIGN/FOLLOW/ARC/LOST/HALTED)
+  publishes   ~/state               std_msgs/String            (latched; IDLE/ALIGN/FOLLOW/
+                                                               ARC/LOST/HALTED)
 """
 
 import math
@@ -152,8 +156,9 @@ class ContourFollower(Node):
         for name, default in DEFAULTS.items():
             self.declare_parameter(name, default)
 
-        self.state = 'IDLE'
+        self.state = None             # set (and published) at the end of __init__
         self.enabled = bool(self._p('auto_start'))
+        self._send_stop = False       # one zero cmd_vel still owed after disabling
         self.cmd = Twist()
         self.prev_t = None            # last scan sim-time, for ARC sweep dt
         self.prev_d = None            # last FOLLOW d_min, for the convex jump
@@ -178,7 +183,8 @@ class ContourFollower(Node):
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.active_pub = self.create_publisher(Bool, 'cleaning_active', latched)
-        self.state_pub = self.create_publisher(String, '~/state', 10)
+        # latched, so a manager that starts later still learns the current state
+        self.state_pub = self.create_publisher(String, '~/state', latched)
         # Markers go out TRANSIENT_LOCAL: RViz's marker display (and Foxglove)
         # default to asking for it, and a VOLATILE publisher is silently
         # incompatible -- the subscriber connects and simply never draws.
@@ -205,14 +211,20 @@ class ContourFollower(Node):
         self._set_state('ALIGN' if self.enabled else 'IDLE')
         self.get_logger().info(
             'contour_follower: follow %s, standoff %.2fm '
-            '(local circle fit + convex arc; no loop-closure yet)'
-            % (self._p('follow_side'), self._p('standoff_m')))
+            '(local circle fit + convex arc; %s)'
+            % (self._p('follow_side'), self._p('standoff_m'),
+               'running free' if self.enabled else 'waiting for ~/enable'))
 
     def _p(self, name):
         return self.get_parameter(name).value
 
     def _pub_cmd(self) -> None:
-        self.cmd_pub.publish(self.cmd)
+        # Silent while disabled, apart from one stop: under the cleaning manager,
+        # Nav2 drives the robot between edges on the same cmd_vel, and a stream
+        # of zeros from here would fight it.
+        if self.enabled or self._send_stop:
+            self.cmd_pub.publish(self.cmd)
+            self._send_stop = False
 
     def _set_cmd(self, v, w) -> None:
         self.cmd.linear.x = float(v)
@@ -233,6 +245,7 @@ class ContourFollower(Node):
         self.enabled = bool(msg.data)
         if not self.enabled:
             self._set_cmd(0.0, 0.0)
+            self._send_stop = True
             self._set_state('IDLE')
         elif self.state in ('IDLE', 'LOST', 'HALTED'):
             self.prev_d = None

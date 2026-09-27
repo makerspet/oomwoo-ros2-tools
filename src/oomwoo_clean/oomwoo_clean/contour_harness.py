@@ -166,6 +166,133 @@ class Scan:
         self.range_min = RANGE_MIN_M
 
 
+class _Sink:
+    """Stand in for a publisher or a logger: accept any call, do nothing."""
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+
+
+class _Twist:
+    """The two Twist fields the follower sets."""
+
+    def __init__(self):
+        """Start at rest."""
+        self.linear = type('V', (), {'x': 0.0})()
+        self.angular = type('V', (), {'z': 0.0})()
+
+
+def make_driving_follower(**overrides):
+    """
+    Build a follower whose whole state machine (ALIGN, FOLLOW, ARC) runs offline.
+
+    Step it with node._step(Scan(...), b_ref, smin, smax, max_r, dt); read the
+    command from node.cmd. Starts in ALIGN, as after ~/enable.
+    """
+    node, params = make_follower(**overrides)
+    node.state = 'ALIGN'
+    node.enabled = True
+    node.cmd = _Twist()
+    node.state_pub = node.active_pub = _Sink()
+    node._active_val = None
+    node.get_logger = _Sink
+    node._pub_errors = lambda *args: None
+    node._maybe_log = lambda *args: None
+    node.prev_d = None
+    node.arc_swept = 0.0
+    return node, params
+
+
+def rasterize(world, res, x0, y0, w, h, inside=None):
+    """
+    Draw a world's surfaces into an occupancy grid (rows = y), like a map.
+
+    Cells a surface passes through are 100. inside(x, y), if given, says which
+    of the rest is floor (0); everything else is unknown (-1), as beyond a
+    room's walls on a SLAM map.
+    """
+    grid = [[-1] * w for _ in range(h)]
+    for j in range(h):
+        for i in range(w):
+            x, y = x0 + (i + 0.5) * res, y0 + (j + 0.5) * res
+            if inside is None or inside(x, y):
+                grid[j][i] = 0
+
+    def mark(x, y):
+        i, j = int((x - x0) / res), int((y - y0) / res)
+        if 0 <= i < w and 0 <= j < h:
+            grid[j][i] = 100
+
+    step = res / 4
+    for (ax, ay), (bx, by) in world[0]:
+        n = max(1, int(math.hypot(bx - ax, by - ay) / step))
+        for k in range(n + 1):
+            mark(ax + (bx - ax) * k / n, ay + (by - ay) * k / n)
+    for (cx, cy), r in world[1]:
+        n = max(12, int(2 * math.pi * r / step))
+        for k in range(n):
+            mark(cx + r * math.cos(2 * math.pi * k / n), cy + r * math.sin(2 * math.pi * k / n))
+        mark(cx, cy)
+    return grid
+
+
+def run_edge_clean(world, sweep, start, max_s=1500.0, seg_timeout_s=600.0, stall_s=40.0,
+                   seed=0):
+    """
+    Run the cleaning manager's loop offline: Nav2 is a teleport to each target.
+
+    sweep is an edge_sweep.EdgeSweep on a map of the same world. Returns a dict:
+    the sweep's stats plus outcomes in order, min_clearance and sim seconds.
+    """
+    random.seed(seed)
+    x, y, th = start
+    dt = 1.0 / SCAN_HZ
+    t, min_clear, order = 0.0, float('inf'), []
+    node, p = make_driving_follower(halt_on_bump=False)
+    smin, smax = math.radians(p['sector_min_deg']), math.radians(p['sector_max_deg'])
+    b_ref = math.radians(p['bearing_ref_deg'])
+    while t < max_s:
+        target = sweep.next_target(x, y)
+        if target is None:
+            break
+        sweep.begin_segment()
+        x, y, th = target
+        sweep.update(x, y, False)
+        node.state, node.prev_d, node.arc_swept = 'ALIGN', None, 0.0
+        t0 = t_prog = t
+        swept = int(sweep.done.sum())
+        outcome = 'timeout'
+        while t - t0 < seg_timeout_s:
+            lx = x + LIDAR_OFFSET_M * math.cos(th)
+            ly = y + LIDAR_OFFSET_M * math.sin(th)
+            segs, circs = to_robot(world, lx, ly, th)
+            node._step(Scan(scan(segs, circs)), b_ref, smin, smax,
+                       p['max_follow_range_m'], dt)
+            v, w = node.cmd.linear.x, node.cmd.angular.z
+            x += v * math.cos(th) * dt
+            y += v * math.sin(th) * dt
+            th += w * dt
+            t += dt
+            min_clear = min(min_clear, clearance(world, x, y))
+            if node.state == 'LOST':
+                outcome = 'lost'
+                break
+            if sweep.update(x, y, node.state in ('FOLLOW', 'ARC')):
+                outcome = 'revisit'
+                break
+            n = int(sweep.done.sum())
+            if n > swept:
+                swept, t_prog = n, t
+            elif t - t_prog > stall_s:
+                outcome = 'stalled'
+                break
+        sweep.end_segment(outcome)
+        order.append(outcome)
+    out = sweep.stats()
+    out.update(order=order, min_clearance=min_clear, seconds=t)
+    return out
+
+
 def run(world, start, seconds=40.0, seed=0, settle_s=5.0, **overrides):
     """
     Drive the follower around a world; return a metrics dict.

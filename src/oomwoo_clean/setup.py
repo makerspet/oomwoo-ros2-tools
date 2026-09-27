@@ -43,6 +43,7 @@ setup(
             'wall_clean = oomwoo_clean.wall_clean_node:main',
             'contour_follower = oomwoo_clean.contour_follower_node:main',
             'bump_map = oomwoo_clean.bump_map_node:main',
+            'clean_manager = oomwoo_clean.clean_manager_node:main',
         ],
     },
 )
