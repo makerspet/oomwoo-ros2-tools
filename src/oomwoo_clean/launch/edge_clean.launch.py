@@ -29,8 +29,8 @@ terminals (the map is rasterized from the same layout as the world):
   ros2 launch oomwoo_clean edge_clean.launch.py
 
 Watch it in RViz with oomwoo_one's edge_clean.rviz -- wall_follow.rviz plus the
-map, the floor already passed over (blue), the obstacle edges (magenta dirty,
-green swept, cyan written off) and the next target (arrow):
+map, the floor already passed over (pale green), the obstacle edges (magenta
+dirty, green swept, cyan written off) and the next Nav2 target (arrow):
 
   ros2 launch oomwoo_bringup monitor_robot.launch.py use_sim_time:=true \\
     rviz_config:=edge_clean.rviz

@@ -67,6 +67,26 @@ def test_nearest_edge_is_measured_along_the_floor():
     assert y < 0.0, 'picked (%.2f, %.2f), across the partition' % (x, y)
 
 
+def test_target_is_the_start_of_the_dirty_stretch_not_the_nearest_end():
+    """
+    The follower only drives forward, so it must be sent to where a stretch starts.
+
+    Only 1 m of the south wall is still dirty, and the robot waits near its
+    downstream (east) end. Following with the wall on the right runs east, so
+    the target must be the west end, a short run-up before it -- sent to the
+    east end, the follower ran straight onto swept edge and the rest was lost.
+    """
+    sw = _sweep((ROOM, []))
+    rows, cols = np.nonzero(sw.ring)
+    for r, c in zip(rows, cols):
+        x, y = sw.centre(r, c)
+        if not (-0.5 <= x <= 0.5 and y < -1.0):
+            sw.done[r, c] = True
+    x, y, yaw = sw.next_target(0.9, -1.0)
+    assert -0.75 < x < -0.45, 'target x %.2f: not the west (upstream) end of the stretch' % x
+    assert abs(math.cos(yaw) - 1.0) < 0.05, 'should face east along the wall, yaw %.2f' % yaw
+
+
 def test_revisit_fires_one_lap_round_a_leg():
     """Circling a leg: no revisit during the first lap, then one shortly after."""
     sw = _sweep((ROOM, [LEG]))

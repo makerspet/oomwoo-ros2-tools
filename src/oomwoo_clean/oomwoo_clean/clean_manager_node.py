@@ -41,13 +41,15 @@ follower and this node together; see there for the full simulator recipe.
   publishes   ~/state                    std_msgs/String   (latched)
   publishes   ~/edge_ring                nav_msgs/OccupancyGrid (latched; 100 dirty,
                                          99 written off, 110 swept, 0 elsewhere)
-  publishes   ~/cleaned                  nav_msgs/OccupancyGrid (latched; 30 passed over,
+  publishes   ~/cleaned                  nav_msgs/OccupancyGrid (latched; 110 passed over,
                                          0 elsewhere)
   publishes   ~/target                   geometry_msgs/PoseStamped
 
 The two grids are coded for RViz's Map display with Color Scheme "costmap",
-where 0 draws transparent: dirty edge magenta, written off cyan, swept green,
-floor passed over blue (oomwoo_one's edge_clean.rviz sets this up).
+where 0 draws transparent: dirty edge magenta, written off cyan, swept green;
+the floor passed over is the same green, drawn translucent so it comes out pale
+(oomwoo_one's edge_clean.rviz sets this up; a Map display only honours the
+transparent 0 when its Alpha is below 1).
 """
 
 import math
@@ -82,6 +84,8 @@ DEFAULTS = {
     'revisit_abort_m': 0.30,          # stop the follower after this much on old track
     'attempt_radius_m': 0.30,         # dirty edge written off around each target
     'min_todo_len_m': 0.30,           # dirty edge shorter than this is not worth a trip
+    'lead_in_m': 0.10,                # start this far before a dirty stretch begins
+    'max_walk_back_m': 2.0,           # a stretch starting further back: start nearest
     'nav_timeout_s': 180.0,
     'max_nav_failures': 3,            # in a row: the robot is stuck, not the targets
     'segment_timeout_s': 900.0,
@@ -165,7 +169,8 @@ class CleanManager(Node):
             clearance_margin=p('clearance_margin'), cleaning_radius=p('cleaning_radius'),
             done_radius=p('done_radius'), revisit_lookback_m=p('revisit_lookback_m'),
             revisit_abort_m=p('revisit_abort_m'), attempt_radius_m=p('attempt_radius_m'),
-            min_todo_len_m=p('min_todo_len_m'))
+            min_todo_len_m=p('min_todo_len_m'), lead_in_m=p('lead_in_m'),
+            max_walk_back_m=p('max_walk_back_m'))
         self.map_msg = msg
         self.get_logger().info(
             'map %dx%d @ %.3f m: ~%.0f m of obstacle edge to sweep'
@@ -206,7 +211,7 @@ class CleanManager(Node):
         ring[sw.ring & sw.done] = 110                    # swept: green
         self.ring_pub.publish(self._grid_msg(ring))
         cleaned = np.zeros((sw.h, sw.w), np.int16)
-        cleaned[sw.cleaned & sw.free] = 30               # passed over: blue
+        cleaned[sw.cleaned & sw.free] = 110              # passed over: green (translucent)
         self.cleaned_pub.publish(self._grid_msg(cleaned))
 
     # ------------------------------------------------------------------ Nav2

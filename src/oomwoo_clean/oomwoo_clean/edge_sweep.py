@@ -26,8 +26,13 @@ This module is the part of it that needs no ROS, so it can be tested on its own:
     follower was driving. Driving there under Nav2 does not count: the point is
     to have run along the edge.
   * next_target() finds the nearest dirty ring cell, measured along paths the
-    robot fits through rather than as the crow flies, and returns a pose on it
-    facing so the obstacle is on the follower's side.
+    robot fits through rather than as the crow flies, then walks back along the
+    dirty stretch it belongs to, against the direction the follower drives, to
+    where that stretch STARTS (plus a short run-up). The follower only drives
+    forward, so starting at the nearest cell -- often the far end of the
+    stretch -- swept a few centimetres into old track and wrote off the rest:
+    in Gazebo, three short hops round one table leg, a third of it left undone.
+    The pose faces along the edge with the obstacle on the follower's side.
   * update() is called with each new robot pose. While the follower drives, it
     reports a REVISIT once the robot has run over ground the follower already
     swept (earlier than revisit_lookback_m of travel ago) for revisit_abort_m.
@@ -88,7 +93,8 @@ class EdgeSweep:
     def __init__(self, grid, res, origin, standoff=0.23, side='right',
                  robot_radius=0.1745, clearance_margin=0.02, cleaning_radius=0.16,
                  done_radius=0.12, revisit_lookback_m=1.0, revisit_abort_m=0.30,
-                 attempt_radius_m=0.30, min_todo_len_m=0.30, ring_tol=None):
+                 attempt_radius_m=0.30, min_todo_len_m=0.30, lead_in_m=0.10,
+                 max_walk_back_m=2.0, ring_tol=None):
         """
         Set up from an occupancy grid (rows = y, values 0..100, -1 unknown).
 
@@ -102,6 +108,9 @@ class EdgeSweep:
         self.revisit_lookback_m = revisit_lookback_m
         self.revisit_abort_m = revisit_abort_m
         self.attempt_radius_m = attempt_radius_m
+        self.lead_in_m = lead_in_m
+        self.standoff = standoff
+        self.max_walk_back_m = max_walk_back_m
         grid = np.asarray(grid)
         self.h, self.w = grid.shape
         occupied = grid >= OCC_THRESH
@@ -228,10 +237,15 @@ class EdgeSweep:
     # ---------------------------------------------------------------- planning
     def next_target(self, x, y):
         """
-        Nearest worthwhile dirty ring cell by path length; (x, y, yaw) or None.
+        Start of the nearest worthwhile dirty stretch; (x, y, yaw) or None.
 
-        yaw faces along the edge with the obstacle on the follower's side, so the
-        follower can start straight away.
+        Nearest by path length, then walked back to the start of its stretch
+        and lead_in_m further along the ring, so Nav2's goal tolerance cannot
+        make the follower start past the first dirty cells. If the start is
+        more than max_walk_back_m back -- a long stretch, or a whole dirty loop
+        at the beginning -- where the follower starts hardly matters, and the
+        nearest cell saves the drive. yaw faces along the edge with the
+        obstacle on the follower's side.
         """
         goal = self._todo_worth_it()
         start = self._nearest_passable(x, y)
@@ -242,13 +256,49 @@ class EdgeSweep:
         if best is None:
             self.target = None
             return None
-        r, c = best
+        r, c, walked = self._upstream(best, goal, self.max_walk_back_m + self.res)
+        if walked > self.max_walk_back_m:
+            r, c = best
+        r, c, _ = self._upstream((r, c), self.ring, self.lead_in_m)
         gx, gy = self.centre(r, c)
-        away = math.atan2(self.uy[r, c], self.ux[r, c])   # from obstacle toward cell
-        # obstacle on the right: heading = away rotated -90 deg (left: +90)
-        yaw = away - self.side * math.pi / 2
-        self.target = (gx, gy, math.atan2(math.sin(yaw), math.cos(yaw)))
+        self.target = (gx, gy, self._heading(r, c))
         return self.target
+
+    def _heading(self, r, c):
+        """Follow direction at a ring cell: along the edge, obstacle on our side."""
+        away = math.atan2(self.uy[r, c], self.ux[r, c])   # from obstacle toward cell
+        yaw = away - self.side * math.pi / 2              # right: away rotated -90 deg
+        return math.atan2(math.sin(yaw), math.cos(yaw))
+
+    def _upstream(self, rc, cells, max_m):
+        """Walk from rc along `cells` against the follow direction; (r, c, metres)."""
+        r, c = rc
+        seen = {rc}
+        walked = 0.0
+        while walked < max_m:
+            yaw = self._heading(r, c)
+            bx, by = -math.cos(yaw), -math.sin(yaw)
+            best, best_score = None, -math.inf
+            for dr, dc in _NEIGHBOURS:
+                rr, cc = r + dr, c + dc
+                if not (0 <= rr < self.h and 0 <= cc < self.w and cells[rr, cc]):
+                    continue
+                if (rr, cc) in seen:
+                    continue
+                dot = (dc * bx + dr * by) / math.hypot(dr, dc)
+                if dot < 0.5:                   # more than 60 deg off straight back
+                    continue
+                # keep to the middle of the band: the pose Nav2 parks at is then
+                # a standoff off the surface, not a cell's width inside it
+                score = dot - abs(self.surface[rr, cc] - self.standoff) / self.res
+                if score > best_score:
+                    best, best_score = (rr, cc), score
+            if best is None:
+                break                           # the stretch starts here
+            walked += math.hypot(best[0] - r, best[1] - c) * self.res
+            r, c = best
+            seen.add(best)
+        return r, c, walked
 
     def _nearest_passable(self, x, y):
         rc = self.cell(x, y)
