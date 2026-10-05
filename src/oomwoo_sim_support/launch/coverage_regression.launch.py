@@ -108,10 +108,15 @@ def generate_launch_description() -> LaunchDescription:
                     ('ground_truth/pose', '/ground_truth/pose'),
                     ('cleaning_active', '/coverage_planner/cleaning_active')])
 
+    # row_overlap 0.0 is what this gate has always run: the planner rounds the
+    # pass spacing to whole map cells, and on the 0.05 m grid anything under
+    # ~6% (the old 0.05 included) rounds to one full 0.40 m swath. Real overlap
+    # (0.10 -> 0.35 m) closes seams left by ~1-3 cm localization error, but the
+    # meter scores efficiency against the full swath, so it costs ~12% here.
     coverage_planner = Node(
         package='oomwoo_coverage', executable='coverage_planner', output='screen',
         parameters=[{'cleaning_radius': cleaning_radius, 'robot_radius': robot_radius,
-                     'coverage_target': coverage_target, 'row_overlap': 0.05, 'max_retries': 1,
+                     'coverage_target': coverage_target, 'row_overlap': 0.0, 'max_retries': 1,
                      'contact_aware_escape': ParameterValue(
                          LaunchConfiguration('contact_aware'), value_type=bool),
                      'row_substep_m': ParameterValue(
