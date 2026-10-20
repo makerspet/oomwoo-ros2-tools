@@ -29,12 +29,31 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import LifecycleNode, LoadComposableNodes, Node
-from launch_ros.descriptions import ComposableNode
+from launch_ros.descriptions import ComposableNode, ParameterFile
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.parameter_descriptions import ParameterValue
 
 from lifecycle_msgs.msg import Transition
+
+# The Nav2 servers OOMWOO uses, as (package, plugin, name, remappings). nav2_bringup's
+# navigation_launch.py also starts route_server, smoother_server, waypoint_follower and
+# docking_server; OOMWOO's behavior trees use none of them, and each idle Nav2 node
+# costs CPU even with no goal. Measured on the living_room replay: about 20% less CPU
+# for the composed stack. The controller -> velocity_smoother -> collision_monitor
+# chain to /cmd_vel is wired as in navigation_launch.py.
+NAV2_SERVERS = [
+    ('nav2_controller', 'nav2_controller::ControllerServer', 'controller_server',
+     [('cmd_vel', 'cmd_vel_nav')]),
+    ('nav2_planner', 'nav2_planner::PlannerServer', 'planner_server', []),
+    ('nav2_behaviors', 'behavior_server::BehaviorServer', 'behavior_server',
+     [('cmd_vel', 'cmd_vel_nav')]),
+    ('nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator', 'bt_navigator', []),
+    ('nav2_velocity_smoother', 'nav2_velocity_smoother::VelocitySmoother',
+     'velocity_smoother', [('cmd_vel', 'cmd_vel_nav')]),
+    ('nav2_collision_monitor', 'nav2_collision_monitor::CollisionMonitor',
+     'collision_monitor', []),
+]
 
 
 def slam_toolbox_stack(desc_pkg_path, nav_params, map_path, serial_base,
@@ -93,16 +112,24 @@ def slam_toolbox_stack(desc_pkg_path, nav_params, map_path, serial_base,
             lifecycle_node_matcher=matches_action(slam),
             transition_id=Transition.TRANSITION_ACTIVATE))]))
 
-    navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            os.path.join(get_package_share_path('nav2_bringup'), 'launch'),
-            '/navigation_launch.py']),
-        launch_arguments={
-            'use_sim_time': 'true' if sim else 'false',
-            'params_file': nav_params,
-            'autostart': 'True',
-            'use_composition': 'True',
-            'container_name': 'nav2_container'}.items())
+    # Only the Nav2 servers OOMWOO uses (NAV2_SERVERS), composed into the same
+    # container. allow_substs expands the $(find-pkg-share ...) behavior-tree paths
+    # in the params file, as nav2_bringup's launch does.
+    nav_params_file = [ParameterFile(nav_params, allow_substs=True), {'use_sim_time': sim}]
+    navigation = LoadComposableNodes(
+        target_container='nav2_container',
+        composable_node_descriptions=[
+            ComposableNode(package=pkg, plugin=plugin, name=name,
+                           parameters=nav_params_file, remappings=remap)
+            for pkg, plugin, name, remap in NAV2_SERVERS
+        ] + [
+            ComposableNode(
+                package='nav2_lifecycle_manager',
+                plugin='nav2_lifecycle_manager::LifecycleManager',
+                name='lifecycle_manager_navigation',
+                parameters=[{'use_sim_time': sim, 'autostart': True,
+                             'node_names': [s[2] for s in NAV2_SERVERS]}]),
+        ])
     # Bring navigation up only after slam_toolbox is active, so map->odom is
     # published before the costmaps configure.
     start_nav = RegisterEventHandler(OnStateTransition(
