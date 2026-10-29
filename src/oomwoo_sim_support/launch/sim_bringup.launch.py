@@ -36,6 +36,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import (
+    SetLaunchConfiguration,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     OpaqueFunction,
@@ -43,7 +44,7 @@ from launch.actions import (
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition, UnlessCondition
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 
@@ -63,7 +64,8 @@ def generate_launch_description() -> LaunchDescription:
     default_map = os.path.join(pkg_sim, 'maps', 'test_room.yaml')
     world = LaunchConfiguration('world')
     map_yaml = LaunchConfiguration('map')
-    nav2_params = os.path.join(pkg_sim, 'config', 'nav2_params.yaml')
+    nav2_params_default = os.path.join(pkg_sim, 'config', 'nav2_params.yaml')
+    nav2_params = LaunchConfiguration('nav2_params_file')
 
     x0 = LaunchConfiguration('x_pose')
     y0 = LaunchConfiguration('y_pose')
@@ -75,6 +77,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('yaw', default_value='0.0'),
         DeclareLaunchArgument('world', default_value=default_world),
         DeclareLaunchArgument('map', default_value=default_map),
+        DeclareLaunchArgument('nav2_params_file', default_value=nav2_params_default),
+        # Disabled by default: no virtual wall without an explicit mask path.
+        DeclareLaunchArgument('keepout_mask', default_value=''),
         # coverage needs the Nav2 nav servers; relocalization does not (it only
         # spins in place under AMCL), so it can bring up a much lighter stack.
         DeclareLaunchArgument('with_nav', default_value='true'),
@@ -111,6 +116,56 @@ def generate_launch_description() -> LaunchDescription:
             except Exception:
                 model = 'oomwoo_one'
         pkg_robot = get_package_share_directory(model)
+        # SIM-ONLY mask contract; we never modify stock YAML. Each Nav2 costmap
+        # receives both a KeepoutFilter and its separate inflation filter.
+        keepout_actions = []
+        keepout_path = context.perform_substitution(
+            LaunchConfiguration('keepout_mask')).strip()
+        if keepout_path:
+            import shutil
+            import tempfile
+            from oomwoo_sim_support.keepout_config import (
+                build_keepout_overlay, INFO_TOPIC, MASK_TOPIC)
+            if not os.path.isabs(keepout_path):
+                raise RuntimeError('keepout_mask must be an absolute path')
+            scratch = tempfile.mkdtemp(prefix='oomwoo_keepout_')
+            try:
+                overlay, forbidden_count = build_keepout_overlay(
+                    context.perform_substitution(nav2_params),
+                    context.perform_substitution(map_yaml),
+                    keepout_path, output_dir=scratch)
+            except Exception:
+                shutil.rmtree(scratch, ignore_errors=True)
+                raise
+            print(f'KEEP_OUT_SIM_ONLY: {forbidden_count} forbidden cells')
+            keepout_actions.append(SetLaunchConfiguration(
+                'nav2_params_file', str(overlay)))
+            keepout_actions.extend([
+                Node(package='nav2_map_server', executable='map_server',
+                     name='oomwoo_keepout_mask_server', output='screen',
+                     parameters=[{'use_sim_time': True,
+                                  'yaml_filename': keepout_path,
+                                  'topic_name': MASK_TOPIC, 'frame_id': 'map'}]),
+                Node(package='nav2_map_server',
+                     executable='costmap_filter_info_server',
+                     name='oomwoo_keepout_info_server', output='screen',
+                     parameters=[{'use_sim_time': True, 'type': 0,
+                                  'filter_info_topic': INFO_TOPIC,
+                                  'mask_topic': MASK_TOPIC,
+                                  'base': 0.0, 'multiplier': 1.0}]),
+                Node(package='nav2_lifecycle_manager',
+                     executable='lifecycle_manager',
+                     name='oomwoo_keepout_lifecycle_manager', output='screen',
+                     parameters=[{'use_sim_time': True, 'autostart': True,
+                                  'bond_timeout': 0.0,
+                                  'node_names': ['oomwoo_keepout_mask_server',
+                                                 'oomwoo_keepout_info_server']}]),
+            ])
+            def cleanup_keepout(context):
+                shutil.rmtree(scratch, ignore_errors=True)
+                return []
+            keepout_actions.append(RegisterEventHandler(OnShutdown(
+                on_shutdown=[OpaqueFunction(function=cleanup_keepout)])))
         xacro_file = os.path.join(pkg_robot, 'urdf', 'robot.urdf.xacro')
         bridge_sim = os.path.join(pkg_robot, 'config', 'gz_bridge.yaml')
 
@@ -172,7 +227,7 @@ def generate_launch_description() -> LaunchDescription:
                 'GZ_SIM_RESOURCE_PATH',
                 os.pathsep.join([os.path.join(pkg_gazebo, 'models'),
                                  pkg_robot])),
-            rsp, bridge, spawn, nav_on_spawn, nav_on_localized,
+            *keepout_actions, rsp, bridge, spawn, nav_on_spawn, nav_on_localized,
         ]
 
     # Gazebo via the official ros_gz_sim wrapper (mirrors kaiaai): it
