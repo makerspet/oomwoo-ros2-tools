@@ -54,6 +54,8 @@ import numpy as np
 
 from oomwoo_dock.dock_template import accept, DockFitter, inv, mul, template, wrap
 
+from oomwoo_health_beat.ros import HealthBeat
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -113,6 +115,7 @@ class DockDetector(Node):
         self.hint_src = None          # what the last hint came from
         self.t_odom = None
         self.frame = 'base_scan'
+        self.health = HealthBeat(self)
         self.pose_pub = self.create_publisher(PoseStamped, '~/dock_pose', 10)
         self.cost_pub = self.create_publisher(Float32, '~/cost', 10)
         self.cover_pub = self.create_publisher(Float32, '~/coverage', 10)
@@ -229,6 +232,11 @@ class DockDetector(Node):
             if (now - self.t_last).nanoseconds * 1e-9 < period:
                 return
         self.t_last = now
+        self._process_scan(msg, now)
+        # one fit attempt is one unit of work, whether or not it found the dock
+        self.health.beat()
+
+    def _process_scan(self, msg: LaserScan, now) -> None:
         self.frame = msg.header.frame_id or self.frame
 
         max_r = self._p('max_range_m')
