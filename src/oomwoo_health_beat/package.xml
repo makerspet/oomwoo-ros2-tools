@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>oomwoo_health_beat</name>
+  <version>0.1.0</version>
+  <description>Opt-in work-path heartbeats for the OOMWOO stack health monitor:
+    a node that sets the health_component_id parameter publishes one JSON
+    heartbeat on /oomwoo/health/component each time a unit of its real work
+    completes. Disabled (no publisher, no cost) when the parameter is empty.</description>
+  <maintainer email="makers-pet@users.noreply.github.com">Ilia O.</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>builtin_interfaces</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>rosgraph_msgs</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
