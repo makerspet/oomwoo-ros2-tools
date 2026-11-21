@@ -73,6 +73,8 @@ from nav_msgs.msg import Odometry
 
 from oomwoo_dock.dock_template import inv, mul, wrap
 
+from oomwoo_health_beat.ros import HealthBeat
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -135,6 +137,7 @@ class DockDrive(Node):
         self.beacon_visible = False
         self.odom = None
         self.cmd = Twist()
+        self.health = HealthBeat(self)
         self._docked_val = None
         latched = QoSProfile(
             depth=1, history=QoSHistoryPolicy.KEEP_LAST,
@@ -196,6 +199,11 @@ class DockDrive(Node):
         self.odom = now
 
     def _tick(self) -> None:
+        """Run one control tick; a tick that published its command is one beat."""
+        self._step()
+        self.health.beat()
+
+    def _step(self) -> None:
         """Run the state machine and publish a command."""
         if not self.enabled or self.state in ('IDLE', 'DONE'):
             self._send(0.0, 0.0)

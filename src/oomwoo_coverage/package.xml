@@ -13,6 +13,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>oomwoo_health_beat</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>ros_gz_interfaces</exec_depend>
