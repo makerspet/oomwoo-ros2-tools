@@ -50,6 +50,8 @@ from nav_msgs.msg import OccupancyGrid, Path
 
 import numpy as np
 
+from oomwoo_health_beat.ros import HealthBeat
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -267,6 +269,8 @@ class CoveragePlanner(Node):
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
+        # opt-in stack health heartbeat (health_component_id; off by default)
+        self.health = HealthBeat(self)
         # 5 Hz coverage accounting; planning kicks off once the map arrives
         self.create_timer(0.2, self._tick)
         self.get_logger().info('coverage_planner up; waiting for /map')
@@ -805,6 +809,12 @@ class CoveragePlanner(Node):
 
     # -------------------------------------------------------------- ticking
     def _tick(self) -> None:
+        # a completed tick is the executor's unit of work (dispatch, watchdog,
+        # escape or reactive drive); a dead or wedged planner stops beating
+        self._step()
+        self.health.beat()
+
+    def _step(self) -> None:
         if self.map_msg is None or self.total_free_cells == 0:
             return
         ratio = self.ext_ratio
