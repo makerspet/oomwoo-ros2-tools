@@ -176,6 +176,9 @@ class CoveragePlanner(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.declare_parameter('max_retries', 3)
         self.max_retries = self.get_parameter('max_retries').value
+        # True while the last pass command the reactive executor published is
+        # non-zero, i.e. the base may still be driving on it
+        self._pass_cmd_live = False
         self.awaiting = False
         self.wp_retries = 0
         self.next_send = None
@@ -259,7 +262,8 @@ class CoveragePlanner(Node):
         # RViz connects. Cheap (a few hundred poses every 2 s).
         self.plan_pub = self.create_publisher(Path, '~/plan', latched_qos())
         self.create_timer(2.0, self._publish_plan)
-        # only used by the wedge escape, while no Nav2 goal is active
+        # the reactive executor's pass commands and the wedge escape, both only
+        # while no Nav2 goal is active
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         # which bumper is pressed decides which way to peel off (_escape_angular)
         self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
@@ -822,6 +826,7 @@ class CoveragePlanner(Node):
             # zero Twist and clear the escape window, else the last command
             # (-0.12 m/s) stands with nothing downstream to zero it.
             self.cmd_pub.publish(Twist())
+            self._pass_cmd_live = False
             self.escape_until = None
             if self.goal_handle is not None:
                 self.goal_handle.cancel_goal_async()
@@ -848,6 +853,7 @@ class CoveragePlanner(Node):
                 self.cmd_pub.publish(tw)
                 return
             self.cmd_pub.publish(tw)    # zero twist: stop cleanly
+            self._pass_cmd_live = False
             self.escape_until = None
             self.next_send = self.get_clock().now() + rclpy.duration.Duration(
                 seconds=1.0)
@@ -975,6 +981,18 @@ class CoveragePlanner(Node):
             self.next_send = self.get_clock().now()
         return True
 
+    def _stop_pass_cmd(self) -> None:
+        """
+        Publish one zero Twist if a reactive pass command may still be driving.
+
+        Ticks that publish nothing leave the last command standing, so every
+        place the executor stops commanding (Nav2 hand-over, no pose, end of
+        coverage) calls this. Once per stop: no repeated zeros while idle.
+        """
+        if self._pass_cmd_live:
+            self.cmd_pub.publish(Twist())
+            self._pass_cmd_live = False
+
     def _tick_reactive(self) -> None:
         """Reactive executor: drive passes on /cmd_vel, transits via Nav2."""
         # a transit (Nav2) goal may be in flight — let Nav2 finish or skip it
@@ -986,8 +1004,14 @@ class CoveragePlanner(Node):
             return
         pose = self._robot_pose()
         if pose is None:
+            # no pose, no closed loop: don't keep driving on a stale command
+            self._stop_pass_cmd()
             return
         if not self._advance_to_target():
+            # coverage complete: nothing will command the base again. (A
+            # gap-fill restart continues driving next tick, so no zero there.)
+            if self.finished:
+                self._stop_pass_cmd()
             return
         target = self.cached_poses[self.wp_index]
         tx, ty = target.pose.position.x, target.pose.position.y
@@ -996,6 +1020,9 @@ class CoveragePlanner(Node):
         dist = (dx * dx + dy * dy) ** 0.5
         # long inter-cell hop: route via Nav2 (avoid plowing through furniture)
         if dist > self.min_transit_len:
+            # /cmd_vel is handed to Nav2 (or nobody while the server is not
+            # ready): the last pass command must not keep driving meanwhile
+            self._stop_pass_cmd()
             if self.nav_client.server_is_ready():
                 self._send_goal_to(target)
             return
@@ -1037,6 +1064,7 @@ class CoveragePlanner(Node):
                     v = max(0.08, min(v, self.v_cruise * dist / 0.4))
             tw.linear.x = v
         self.cmd_pub.publish(tw)
+        self._pass_cmd_live = tw.linear.x != 0.0 or tw.angular.z != 0.0
 
 
 # ------------------------------------------------------------- numpy helpers
