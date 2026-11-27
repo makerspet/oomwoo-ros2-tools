@@ -27,8 +27,32 @@ try:
 except ImportError:
     LaunchContext = None
 
+# packages sim_bringup.launch.py looks up while the graph is evaluated; the
+# repo CI builds only this repo's packages (oomwoo_gazebo and oomwoo_one are
+# source siblings, ros_gz_sim is skipped by rosdep), so skip without them
+LAUNCH_PKGS = ('oomwoo_gazebo', 'oomwoo_one', 'ros_gz_sim', 'nav2_bt_navigator')
+
+
+def _missing_packages():
+    try:
+        from ament_index_python.packages import (
+            get_package_share_directory, PackageNotFoundError)
+    except ImportError:
+        return list(LAUNCH_PKGS)
+    missing = []
+    for name in LAUNCH_PKGS:
+        try:
+            get_package_share_directory(name)
+        except PackageNotFoundError:
+            missing.append(name)
+    return missing
+
+
+MISSING = _missing_packages() if LaunchContext is not None else []
+
 
 @unittest.skipIf(LaunchContext is None, 'ROS2 Jazzy launch is unavailable')
+@unittest.skipIf(bool(MISSING), f'launch packages not installed: {MISSING}')
 class KeepoutLaunchGraphTests(unittest.TestCase):
     """Evaluate launch argument branching without starting the sim."""
 
