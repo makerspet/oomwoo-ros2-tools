@@ -227,10 +227,10 @@ def test_normal_pass_tick_keeps_driving_and_marks_command_live():
     assert me._pass_cmd_live
 
 
-def test_tick_hz_default_is_5():
-    assert DEFAULT_TICK_HZ == 5.0
+def test_tick_hz_default_is_20():
+    assert DEFAULT_TICK_HZ == 20.0
     assert tick_rate_hz(5.0) == 5.0
-    assert 1.0 / tick_rate_hz(DEFAULT_TICK_HZ) == 0.2
+    assert 1.0 / tick_rate_hz(DEFAULT_TICK_HZ) == 0.05
 
 
 def test_tick_rate_hz_accepts_values_in_range():

@@ -72,7 +72,10 @@ FREE = 0
 UNKNOWN = -1
 # cells with occupancy >= OCC_THRESH are treated as obstacle
 OCC_THRESH = 50
-DEFAULT_TICK_HZ = 5.0       # planner tick (executor) rate
+# planner tick (executor) rate. The reactive executor publishes /cmd_vel from
+# this tick, and each tick that publishes nothing adds one period to the age
+# of the standing command.
+DEFAULT_TICK_HZ = 20.0
 TICK_HZ_RANGE = (1.0, 100.0)    # usable tick_hz values, Hz
 
 
@@ -273,7 +276,7 @@ class CoveragePlanner(Node):
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
-        # the executor runs on this timer (default 5 Hz): plan start once the map
+        # the executor runs on this timer (default 20 Hz): plan start once the map
         # arrives, escapes, Nav2 goal dispatch and watchdog, the reactive drive.
         # Every timeout in the tick path is clock based; tick_hz sets how often
         # they are checked (a deadline is acted on up to one period late) and
