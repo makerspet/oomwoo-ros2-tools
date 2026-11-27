@@ -24,6 +24,8 @@ from oomwoo_coverage.coverage_planner_node import (
     _flood_fill,
     _nearest_true,
     _pt_in_zones,
+    DEFAULT_TICK_HZ,
+    tick_rate_hz,
 )
 
 
@@ -223,3 +225,21 @@ def test_normal_pass_tick_keeps_driving_and_marks_command_live():
     tick()
     assert len(published) == 1 and published[0].linear.x == 0.3
     assert me._pass_cmd_live
+
+
+def test_tick_hz_default_is_5():
+    assert DEFAULT_TICK_HZ == 5.0
+    assert tick_rate_hz(5.0) == 5.0
+    assert 1.0 / tick_rate_hz(DEFAULT_TICK_HZ) == 0.2
+
+
+def test_tick_rate_hz_accepts_values_in_range():
+    assert tick_rate_hz(20.0) == 20.0
+    assert tick_rate_hz(20) == 20.0
+    assert tick_rate_hz(1.0) == 1.0 and tick_rate_hz(100.0) == 100.0
+
+
+def test_tick_hz_rejects_unusable_values():
+    for bad in (0, 0.0, -5.0, 0.5, 1e-300, 101.0, 1e6, float('nan'),
+                float('inf'), None, 'x'):
+        assert tick_rate_hz(bad) == DEFAULT_TICK_HZ

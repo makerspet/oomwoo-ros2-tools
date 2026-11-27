@@ -72,6 +72,8 @@ FREE = 0
 UNKNOWN = -1
 # cells with occupancy >= OCC_THRESH are treated as obstacle
 OCC_THRESH = 50
+DEFAULT_TICK_HZ = 5.0       # planner tick (executor) rate
+TICK_HZ_RANGE = (1.0, 100.0)    # usable tick_hz values, Hz
 
 
 def latched_qos() -> QoSProfile:
@@ -271,8 +273,19 @@ class CoveragePlanner(Node):
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
-        # 5 Hz coverage accounting; planning kicks off once the map arrives
-        self.create_timer(0.2, self._tick)
+        # the executor runs on this timer (default 5 Hz): plan start once the map
+        # arrives, escapes, Nav2 goal dispatch and watchdog, the reactive drive.
+        # Every timeout in the tick path is clock based; tick_hz sets how often
+        # they are checked (a deadline is acted on up to one period late) and
+        # how often the reactive executor publishes /cmd_vel.
+        self.declare_parameter('tick_hz', DEFAULT_TICK_HZ)
+        raw_hz = self.get_parameter('tick_hz').value
+        self.tick_hz = tick_rate_hz(raw_hz)
+        if self.tick_hz != raw_hz:
+            self.get_logger().warn(
+                f'tick_hz={raw_hz!r} is outside {TICK_HZ_RANGE[0]:g}-'
+                f'{TICK_HZ_RANGE[1]:g} Hz; using {self.tick_hz} Hz')
+        self.create_timer(1.0 / self.tick_hz, self._tick)
         self.get_logger().info('coverage_planner up; waiting for /map')
 
     # ---------------------------------------------------------------- maps
@@ -1065,6 +1078,18 @@ class CoveragePlanner(Node):
             tw.linear.x = v
         self.cmd_pub.publish(tw)
         self._pass_cmd_live = tw.linear.x != 0.0 or tw.angular.z != 0.0
+
+
+# ------------------------------------------------------------- parameters
+def tick_rate_hz(hz) -> float:
+    """Return hz as a float if it is a usable tick rate (in TICK_HZ_RANGE), else the default."""
+    try:
+        hz = float(hz)
+    except (TypeError, ValueError):
+        return DEFAULT_TICK_HZ
+    if not TICK_HZ_RANGE[0] <= hz <= TICK_HZ_RANGE[1]:    # also rejects nan
+        return DEFAULT_TICK_HZ
+    return hz
 
 
 # ------------------------------------------------------------- numpy helpers
