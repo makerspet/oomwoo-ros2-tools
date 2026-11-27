@@ -14,13 +14,12 @@
 
 """ROS2 Jazzy launch graph checks: no Gazebo spawn or motor activity."""
 import importlib.util
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
-
-import yaml
 
 from oomwoo_sim_support.keepout_config import _pgm
+import yaml
 
 try:
     from launch import LaunchContext
@@ -28,15 +27,39 @@ try:
 except ImportError:
     LaunchContext = None
 
+# packages sim_bringup.launch.py looks up while the graph is evaluated; the
+# repo CI builds only this repo's packages (oomwoo_gazebo and oomwoo_one are
+# source siblings, ros_gz_sim is skipped by rosdep), so skip without them
+LAUNCH_PKGS = ('oomwoo_gazebo', 'oomwoo_one', 'ros_gz_sim', 'nav2_bt_navigator')
 
-@unittest.skipIf(LaunchContext is None, "ROS2 Jazzy launch is unavailable")
+
+def _missing_packages():
+    try:
+        from ament_index_python.packages import (
+            get_package_share_directory, PackageNotFoundError)
+    except ImportError:
+        return list(LAUNCH_PKGS)
+    missing = []
+    for name in LAUNCH_PKGS:
+        try:
+            get_package_share_directory(name)
+        except PackageNotFoundError:
+            missing.append(name)
+    return missing
+
+
+MISSING = _missing_packages() if LaunchContext is not None else []
+
+
+@unittest.skipIf(LaunchContext is None, 'ROS2 Jazzy launch is unavailable')
+@unittest.skipIf(bool(MISSING), f'launch packages not installed: {MISSING}')
 class KeepoutLaunchGraphTests(unittest.TestCase):
     """Evaluate launch argument branching without starting the sim."""
 
     def setUp(self):
         self.pkg = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location(
-            "oomwoo_sim_keepout_launch", self.pkg / "launch/sim_bringup.launch.py")
+            'oomwoo_sim_keepout_launch', self.pkg / 'launch/sim_bringup.launch.py')
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
         self.description = self.module.generate_launch_description()
@@ -47,18 +70,18 @@ class KeepoutLaunchGraphTests(unittest.TestCase):
     def evaluate(self, mask):
         ctx = LaunchContext()
         for key, value in {
-            "robot_model": "oomwoo_one",
-            "keepout_mask": mask,
-            "map": str(self.pkg / "maps/test_room.yaml"),
-            "nav2_params_file": str(self.pkg / "config/nav2_params.yaml"),
-            "x_pose": "0.0", "y_pose": "0.0", "yaw": "0.0",
-            "world": "unused", "with_nav": "true", "gui": "false",
+            'robot_model': 'oomwoo_one',
+            'keepout_mask': mask,
+            'map': str(self.pkg / 'maps/test_room.yaml'),
+            'nav2_params_file': str(self.pkg / 'config/nav2_params.yaml'),
+            'x_pose': '0.0', 'y_pose': '0.0', 'yaw': '0.0',
+            'world': 'unused', 'with_nav': 'true', 'gui': 'false',
         }.items():
             ctx.launch_configurations[key] = value
         return ctx, self.opaque[0].execute(ctx)
 
     def test_default_graph_does_not_enable_filters(self):
-        _, actions = self.evaluate("")
+        _, actions = self.evaluate('')
         self.assertFalse(any(isinstance(a, SetLaunchConfiguration)
                              for a in actions))
         self.assertEqual(len(actions), 6)
@@ -67,23 +90,23 @@ class KeepoutLaunchGraphTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_name:
             tmp = Path(tmp_name)
             mapdata = yaml.safe_load(
-                (self.pkg / "maps/test_room.yaml").read_text())
-            width, height, _ = _pgm(self.pkg / "maps" / mapdata["image"])
+                (self.pkg / 'maps/test_room.yaml').read_text())
+            width, height, _ = _pgm(self.pkg / 'maps' / mapdata['image'])
             pix = bytearray([255] * (width * height))
             pix[(height // 2) * width + width // 2] = 0
-            (tmp / "mask.pgm").write_bytes(
-                f"P5\n{width} {height}\n255\n".encode() + pix)
-            mapdata["image"] = "mask.pgm"
-            (tmp / "mask.yaml").write_text(yaml.safe_dump(mapdata))
-            ctx, actions = self.evaluate(str(tmp / "mask.yaml"))
+            (tmp / 'mask.pgm').write_bytes(
+                f'P5\n{width} {height}\n255\n'.encode() + pix)
+            mapdata['image'] = 'mask.pgm'
+            (tmp / 'mask.yaml').write_text(yaml.safe_dump(mapdata))
+            ctx, actions = self.evaluate(str(tmp / 'mask.yaml'))
             setters = [a for a in actions
                        if isinstance(a, SetLaunchConfiguration)]
             self.assertEqual(len(setters), 1)
             setters[0].execute(ctx)
             params = yaml.safe_load(Path(
-                ctx.launch_configurations["nav2_params_file"]).read_text())
-            for name in ("global_costmap", "local_costmap"):
+                ctx.launch_configurations['nav2_params_file']).read_text())
+            for name in ('global_costmap', 'local_costmap'):
                 self.assertEqual(
-                    params[name][name]["ros__parameters"]["filters"],
-                    ["keepout_filter", "keepout_inflation"])
+                    params[name][name]['ros__parameters']['filters'],
+                    ['keepout_filter', 'keepout_inflation'])
             self.assertEqual(len(actions), 11)

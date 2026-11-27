@@ -36,12 +36,12 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import (
-    SetLaunchConfiguration,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
+    SetLaunchConfiguration,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit, OnShutdown
@@ -161,6 +161,7 @@ def generate_launch_description() -> LaunchDescription:
                                   'node_names': ['oomwoo_keepout_mask_server',
                                                  'oomwoo_keepout_info_server']}]),
             ])
+
             def cleanup_keepout(context):
                 shutil.rmtree(scratch, ignore_errors=True)
                 return []

@@ -34,8 +34,9 @@ import urllib.request
 import yaml
 
 ROSDISTRO = 'https://raw.githubusercontent.com/ros/rosdistro/master'
-# stdlib + relative imports that never need declaring
-IGNORE_IMPORTS = {
+# stdlib + relative imports that never need declaring: the interpreter's own
+# list (Python 3.10+) plus the names this script always knew
+IGNORE_IMPORTS = set(getattr(sys, 'stdlib_module_names', ())) | {
     'argparse', 'collections', 'dataclasses', 'enum', 'functools', 'glob',
     'heapq', 'itertools', 'json', 'math', 'os', 'random', 're', 'subprocess',
     'sys', 'tempfile', 'time', 'types', 'typing', 'unittest', 'xml',
