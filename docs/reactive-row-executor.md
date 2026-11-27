@@ -44,7 +44,8 @@ This is the reactive-control layer the recovery-safety RFC anticipated.
 
 The `coverage_planner` node **already has everything the executor needs**: a
 `cmd_vel` publisher (used by the escape), `bumper_left|right/contact`
-subscriptions, the `amcl_pose` subscription, the 10 Hz `_tick` loop, and the
+subscriptions, the `amcl_pose` subscription, the `_tick` loop (`tick_hz`,
+default 20 Hz), and the
 contact-aware peel-off. So the executor starts life as a **RowDriver mode inside
 the existing node**, not a new process — minimal new infrastructure, and it
 reuses the escape reflex directly. If it grows, it splits into its own

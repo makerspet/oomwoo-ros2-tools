@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unit tests for the boustrophedon planner's grid helpers."""
+"""Unit tests for the boustrophedon planner's grid helpers and reactive tick."""
+
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -22,6 +24,8 @@ from oomwoo_coverage.coverage_planner_node import (
     _flood_fill,
     _nearest_true,
     _pt_in_zones,
+    DEFAULT_TICK_HZ,
+    tick_rate_hz,
 )
 
 
@@ -125,3 +129,117 @@ def test_nearest_true_prefers_close_cells():
     mask[9, 9] = True
     assert _nearest_true(mask, cx=4, cy=4) == (3, 3)
     assert _nearest_true(np.zeros((4, 4), dtype=bool), 1, 1, max_r=3) is None
+
+
+class _FakeNav:
+    def __init__(self, ready=True):
+        self.ready = ready
+
+    def server_is_ready(self):
+        return self.ready
+
+
+def _reactive_stub(dist, live, ready=True, pose='ok', finished=False, advance=True):
+    """Build a CoveragePlanner stand-in with just what _tick_reactive touches."""
+    from types import MethodType
+
+    from geometry_msgs.msg import PoseStamped
+    from oomwoo_coverage.coverage_planner_node import CoveragePlanner
+
+    sent, published = [], []
+    target = PoseStamped()
+    target.pose.position.x = dist
+    me = SimpleNamespace(
+        awaiting=False, goal_deadline=None, finished=finished, wp_index=0,
+        cached_poses=[target], min_transit_len=1.0, reach_tol=0.12,
+        _pass_cmd_live=live, nav_client=_FakeNav(ready),
+        cmd_pub=SimpleNamespace(publish=published.append),
+        _maybe_wedge_escape=lambda: False,
+        _robot_pose=lambda: (0.0, 0.0, 0.0) if pose == 'ok' else None,
+        _advance_to_target=lambda: advance,
+        _send_goal_to=sent.append)
+    me._stop_pass_cmd = MethodType(CoveragePlanner._stop_pass_cmd, me)
+    return me, MethodType(CoveragePlanner._tick_reactive, me), sent, published
+
+
+def test_transit_dispatch_zeroes_live_pass_command():
+    me, tick, sent, published = _reactive_stub(dist=3.0, live=True)
+    tick()
+    assert len(sent) == 1
+    assert len(published) == 1
+    assert published[0].linear.x == 0.0 and published[0].angular.z == 0.0
+    assert not me._pass_cmd_live
+
+
+def test_transit_without_live_command_publishes_nothing():
+    _, tick, sent, published = _reactive_stub(dist=3.0, live=False)
+    tick()
+    assert len(sent) == 1 and published == []
+
+
+def test_transit_with_server_not_ready_still_zeroes_once():
+    me, tick, sent, published = _reactive_stub(dist=3.0, live=True, ready=False)
+    tick()
+    tick()
+    assert sent == [] and len(published) == 1
+
+
+def test_no_pose_zeroes_live_pass_command():
+    _, tick, _, published = _reactive_stub(dist=0.5, live=True, pose=None)
+    tick()
+    assert len(published) == 1
+
+
+def test_reached_waypoint_tick_is_silent_and_the_transit_tick_zeroes():
+    from geometry_msgs.msg import PoseStamped
+
+    me, tick, sent, published = _reactive_stub(dist=0.05, live=True)
+    far = PoseStamped()
+    far.pose.position.x = 3.0
+    me.cached_poses.append(far)
+    tick()      # within reach_tol: only the index moves, the command stands
+    assert published == [] and me.wp_index == 1 and me._pass_cmd_live
+    tick()      # next target is a transit: zero, then the goal
+    assert len(sent) == 1 and len(published) == 1 and not me._pass_cmd_live
+
+
+def test_coverage_complete_zeroes_but_gapfill_restart_does_not():
+    _, tick, _, published = _reactive_stub(
+        dist=0.5, live=True, advance=False, finished=True)
+    tick()
+    assert len(published) == 1
+    _, tick, _, published = _reactive_stub(
+        dist=0.5, live=True, advance=False, finished=False)
+    tick()
+    assert published == []
+
+
+def test_normal_pass_tick_keeps_driving_and_marks_command_live():
+    me, tick, _, published = _reactive_stub(dist=0.5, live=False)
+    me.v_cruise, me.rotate_speed, me.k_heading, me.align_tol = 0.3, 1.0, 1.5, 0.3
+    me.no_progress_sec = 10.0
+    me._drive_best_dist = None
+    me._drive_progress_t = None
+    me._elapsed = lambda t: 0.0
+    me.get_clock = lambda: SimpleNamespace(now=lambda: 0)
+    tick()
+    assert len(published) == 1 and published[0].linear.x == 0.3
+    assert me._pass_cmd_live
+
+
+def test_tick_hz_default_is_20():
+    assert DEFAULT_TICK_HZ == 20.0
+    assert tick_rate_hz(5.0) == 5.0
+    assert 1.0 / tick_rate_hz(DEFAULT_TICK_HZ) == 0.05
+
+
+def test_tick_rate_hz_accepts_values_in_range():
+    assert tick_rate_hz(20.0) == 20.0
+    assert tick_rate_hz(20) == 20.0
+    assert tick_rate_hz(1.0) == 1.0 and tick_rate_hz(100.0) == 100.0
+
+
+def test_tick_hz_rejects_unusable_values():
+    for bad in (0, 0.0, -5.0, 0.5, 1e-300, 101.0, 1e6, float('nan'),
+                float('inf'), None, 'x'):
+        assert tick_rate_hz(bad) == DEFAULT_TICK_HZ
